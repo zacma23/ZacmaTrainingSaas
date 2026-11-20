@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "Public Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Official ZACMA Technology Brand Tokens */
+  --color-zacma-blue: #172DEB;
+  --color-zacma-blue-secondary: #263FEF;
+  --color-zacma-blue-dark: #1020B8;
+  --color-zacma-blue-soft: #EEF1FE;
+  --color-zacma-red: #E51B23;
+  --color-zacma-red-dark: #C2141B;
+  --color-zacma-red-soft: #FEF2F2;
+  --color-zacma-navy: #111827;
+  --color-zacma-surface: #F5F7FC;
+  --color-zacma-border: #E5E7EB;
+  --color-zacma-muted: #64748B;
+
+  /* Align Tailwind Blue, Red, and Neutral Scale with Official ZACMA Palette */
+  --color-blue-50: #EEF1FE;
+  --color-blue-100: #DCE2FD;
+  --color-blue-200: #BAC5FB;
+  --color-blue-300: #8FA0FF;
+  --color-blue-400: #5C72FA;
+  --color-blue-500: #3852F5;
+  --color-blue-600: #263FEF;
+  --color-blue-700: #172DEB;
+  --color-blue-800: #1223C2;
+  --color-blue-900: #0D1A8F;
+
+  --color-red-50: #FEF2F2;
+  --color-red-100: #FEE2E2;
+  --color-red-200: #FECACA;
+  --color-red-500: #EF2D35;
+  --color-red-600: #E51B23;
+  --color-red-700: #C2141B;
+  --color-red-800: #991B1B;
+  --color-red-900: #7F1D1D;
+
+  --color-slate-50: #F5F7FC;
+  --color-slate-200: #E5E7EB;
+  --color-slate-500: #64748B;
+  --color-slate-900: #111827;
+  --color-slate-950: #0B1120;
+}
+
+:root {
+  --zacma-blue: #172DEB;
+  --zacma-blue-secondary: #263FEF;
+  --zacma-red: #E51B23;
+  --zacma-navy: #111827;
+  --zacma-white: #FFFFFF;
+  --zacma-bg: #F5F7FC;
+  --zacma-border: #E5E7EB;
+  --zacma-muted: #64748B;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--zacma-bg);
+    color: var(--zacma-navy);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+    color: var(--zacma-navy);
+  }
+
+  button,
+  a,
+  input,
+  select,
+  textarea {
+    transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--zacma-blue);
+    outline-offset: 2px;
+  }
+
+  table thead th {
+    letter-spacing: 0.01em;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.zacma-brand-stripe {
+  background: linear-gradient(90deg, #172DEB 0%, #172DEB 72%, #E51B23 72%, #E51B23 100%);
+}
+
+@keyframes zacma-loader {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.animate-zacma-loader {
+  animation: zacma-loader 1.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+/* Official Printable Receipt Styling */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #zacma-printable-receipt,
+  #zacma-printable-receipt * {
+    visibility: visible;
+  }
+
+  #zacma-printable-receipt {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 24px;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}

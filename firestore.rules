@@ -1,0 +1,2011 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------------------------------------------------------
+    // Core Primitives, Platform Roles & Multi-Tenant Helpers
+    // ---------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBootstrapAdmin() {
+      return isSignedIn() && request.auth.token.email_verified == true && request.auth.token.email == 'zekimuluken@gmail.com';
+    }
+
+    function profileExists() {
+      return exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data;
+    }
+
+    // Layer 1: ZACMA SaaS Platform Owner Roles
+    function isPlatformSuperAdmin() {
+      return isBootstrapAdmin() || (
+        isSignedIn() && profileExists() && myProfile().isActive == true
+        && ('platformRole' in myProfile()) && myProfile().platformRole == 'SUPER_ADMIN'
+      );
+    }
+
+    function isPlatformAdmin() {
+      return isPlatformSuperAdmin() || (
+        isSignedIn() && profileExists() && myProfile().isActive == true
+        && ('platformRole' in myProfile()) && myProfile().platformRole == 'PLATFORM_ADMIN'
+      );
+    }
+
+    function isPlatformFinance() {
+      return isPlatformAdmin() || (
+        isSignedIn() && profileExists() && myProfile().isActive == true
+        && ('platformRole' in myProfile()) && myProfile().platformRole == 'PLATFORM_FINANCE'
+      );
+    }
+
+    function isPlatformSupport() {
+      return isPlatformAdmin() || (
+        isSignedIn() && profileExists() && myProfile().isActive == true
+        && ('platformRole' in myProfile()) && myProfile().platformRole == 'PLATFORM_SUPPORT'
+      );
+    }
+
+    function isPlatformStaff() {
+      return isPlatformSuperAdmin() || isPlatformAdmin() || isPlatformFinance() || isPlatformSupport();
+    }
+
+    // Layer 2: Independent Training Institute Roles
+    function isAdmin() {
+      return isPlatformSuperAdmin() || (
+        isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'ADMIN'
+      );
+    }
+
+    function isManager() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'MANAGER';
+    }
+
+    function isAccountant() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'ACCOUNTANT';
+    }
+
+    function isInstructor() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'INSTRUCTOR';
+    }
+
+    function isReceptionist() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'RECEPTIONIST';
+    }
+
+    function isHrOfficer() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'HR_OFFICER';
+    }
+
+    function isGeneralStaff() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'GENERAL_STAFF';
+    }
+
+    function isStudent() {
+      return isSignedIn() && profileExists() && myProfile().isActive == true && myProfile().role == 'STUDENT';
+    }
+
+    function isOwnStudentRecord(studentId) {
+      return isStudent() && ('linkedStudentId' in myProfile()) && myProfile().linkedStudentId == studentId;
+    }
+
+    function isStaff() {
+      return isPlatformStaff() || isAdmin() || isManager() || isAccountant() || isInstructor() || isReceptionist() || isHrOfficer() || isGeneralStaff();
+    }
+
+    function isFinanceStaff() {
+      return isPlatformFinance() || isAdmin() || isManager() || isAccountant();
+    }
+
+    function isRegistrationStaff() {
+      return isPlatformAdmin() || isAdmin() || isManager() || isAccountant() || isReceptionist() || isHrOfficer();
+    }
+
+    // Strict Multi-Tenant Isolation Primitives (Legacy ZACMA records without tenantId map to 'zacma_default')
+    function userTenantId() {
+      return (profileExists() && ('tenantId' in myProfile())) ? myProfile().tenantId : 'zacma_default';
+    }
+
+    function docTenantId(data) {
+      return ('tenantId' in data) ? data.tenantId : 'zacma_default';
+    }
+
+    function isSameTenant(data) {
+      return isPlatformStaff() || docTenantId(data) == userTenantId();
+    }
+
+    function isTenantWritable(tid) {
+      return isPlatformAdmin()
+        || !exists(/databases/$(database)/documents/tenants/$(tid))
+        || get(/databases/$(database)/documents/tenants/$(tid)).data.status != 'SUSPENDED';
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isOptionalString(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptionalNumber(data, key) {
+      return !(key in data) || (data[key] is int || data[key] is float);
+    }
+
+    function isPositiveNumber(val) {
+      return (val is int || val is float) && val > 0;
+    }
+
+    function isNonNegativeNumber(val) {
+      return (val is int || val is float) && val >= 0;
+    }
+
+    function isBoundedStringList(val, maxLen) {
+      return val is list && val.size() <= maxLen && (val.size() == 0 || val[0] is string);
+    }
+
+    function isValidRoleCode(r) {
+      return r in ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'INSTRUCTOR', 'RECEPTIONIST', 'HR_OFFICER', 'GENERAL_STAFF', 'STUDENT'];
+    }
+
+    function isValidPlatformRole(r) {
+      return r in ['SUPER_ADMIN', 'PLATFORM_ADMIN', 'PLATFORM_SUPPORT', 'PLATFORM_FINANCE'];
+    }
+
+    function isValidCurrency(c) {
+      return c in ['ETB', 'USD', 'KES', 'EUR', 'GBP'];
+    }
+
+    // ---------------------------------------------------------
+    // Validation Blueprints — Institutional Collections
+    // ---------------------------------------------------------
+    function isValidRole(data) {
+      return data.keys().hasAll(['code', 'name', 'description'])
+        && data.keys().hasOnly(['code', 'name', 'description', 'permissions'])
+        && isValidRoleCode(data.code)
+        && isNonEmptyString(data.name, 60)
+        && isNonEmptyString(data.description, 300)
+        && (!('permissions' in data) || isBoundedStringList(data.permissions, 30));
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'fullName', 'role', 'isActive', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'tenantId', 'platformRole', 'inviteId', 'email', 'fullName', 'phone', 'role', 'linkedStudentId', 'allowedModules', 'canExportReports', 'lastLoginAt', 'isActive', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && isOptionalString(data, 'tenantId', 80)
+        && (!('platformRole' in data) || isValidPlatformRole(data.platformRole))
+        && isOptionalString(data, 'inviteId', 128)
+        && isNonEmptyString(data.email, 160)
+        && isNonEmptyString(data.fullName, 120)
+        && isOptionalString(data, 'phone', 30)
+        && isOptionalString(data, 'linkedStudentId', 128)
+        && (!('allowedModules' in data) || isBoundedStringList(data.allowedModules, 20))
+        && (!('canExportReports' in data) || data.canExportReports is bool)
+        && isOptionalString(data, 'lastLoginAt', 40)
+        && isValidRoleCode(data.role)
+        && data.isActive is bool
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidCourse(data) {
+      return data.keys().hasAll(['code', 'name', 'category', 'durationWeeks', 'feeEtb', 'schedule', 'isActive', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'code', 'name', 'category', 'durationWeeks', 'feeEtb', 'schedule', 'instructorId', 'instructorName', 'description', 'isActive', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.code, 24)
+        && isNonEmptyString(data.name, 120)
+        && isNonEmptyString(data.category, 80)
+        && isPositiveNumber(data.durationWeeks)
+        && isPositiveNumber(data.feeEtb)
+        && isNonEmptyString(data.schedule, 120)
+        && isOptionalString(data, 'instructorId', 128)
+        && isOptionalString(data, 'instructorName', 120)
+        && isOptionalString(data, 'description', 500)
+        && data.isActive is bool
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPaymentPlan(data) {
+      return data.keys().hasAll(['code', 'name', 'installmentCount', 'intervalDays', 'isActive'])
+        && data.keys().hasOnly(['tenantId', 'code', 'name', 'installmentCount', 'intervalDays', 'description', 'isActive'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.code in ['FULL', 'MONTHLY', 'TWO_MONTH', 'THREE_MONTH', 'SIX_MONTH', 'CUSTOM']
+        && isNonEmptyString(data.name, 80)
+        && isPositiveNumber(data.installmentCount)
+        && isNonNegativeNumber(data.intervalDays)
+        && isOptionalString(data, 'description', 240)
+        && data.isActive is bool;
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['studentCode', 'fullName', 'gender', 'phone', 'address', 'courseId', 'courseName', 'enrollmentDate', 'courseFeeEtb', 'paymentPlanCode', 'registrationStatus', 'registeredBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'studentCode', 'fullName', 'gender', 'phone', 'altPhone', 'email', 'dateOfBirth', 'nationality', 'address', 'photoUrl', 'idDocumentType', 'idNumberMasked', 'idNumberHash', 'idExpiryDate', 'idVaultRefId', 'idVerificationStatus', 'ocrConfidenceSummary', 'initialPaymentEtb', 'courseId', 'courseName', 'enrollmentDate', 'registrationDateEthiopian', 'registrationTimeEat', 'courseFeeEtb', 'paymentPlanCode', 'registrationStatus', 'registeredBy', 'registeredByName', 'approvedBy', 'approvedByName', 'approvedAt', 'rejectionReason', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.studentCode, 28)
+        && data.studentCode.matches('^[A-Z0-9]{2,10}-(?:[0-9]{4}|STU)-[0-9]{4,}$')
+        && isNonEmptyString(data.fullName, 120)
+        && data.gender in ['Male', 'Female', 'Unspecified']
+        && isNonEmptyString(data.phone, 30)
+        && isOptionalString(data, 'altPhone', 30)
+        && isOptionalString(data, 'email', 160)
+        && isOptionalString(data, 'dateOfBirth', 20)
+        && isOptionalString(data, 'nationality', 80)
+        && isNonEmptyString(data.address, 240)
+        && isOptionalString(data, 'photoUrl', 90000)
+        && (!('idDocumentType' in data) || data.idDocumentType in ['NATIONAL_ID', 'ETHIOPIAN_FAYDA_ID', 'PASSPORT', 'DRIVING_LICENCE'])
+        && isOptionalString(data, 'idNumberMasked', 40)
+        && isOptionalString(data, 'idNumberHash', 80)
+        && isOptionalString(data, 'idExpiryDate', 20)
+        && isOptionalString(data, 'idVaultRefId', 128)
+        && (!('idVerificationStatus' in data) || data.idVerificationStatus in ['UNVERIFIED', 'PENDING_REVIEW', 'VERIFIED', 'FLAGGED', 'REJECTED'])
+        && isOptionalString(data, 'ocrConfidenceSummary', 240)
+        && (!('initialPaymentEtb' in data) || isNonNegativeNumber(data.initialPaymentEtb))
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isNonEmptyString(data.enrollmentDate, 20)
+        && isOptionalString(data, 'registrationDateEthiopian', 40)
+        && isOptionalString(data, 'registrationTimeEat', 30)
+        && isPositiveNumber(data.courseFeeEtb)
+        && data.paymentPlanCode in ['FULL', 'MONTHLY', 'TWO_MONTH', 'THREE_MONTH', 'SIX_MONTH', 'CUSTOM']
+        && data.registrationStatus in ['PENDING', 'APPROVED', 'REJECTED']
+        && isNonEmptyString(data.registeredBy, 128)
+        && isOptionalString(data, 'registeredByName', 120)
+        && isOptionalString(data, 'approvedBy', 128)
+        && isOptionalString(data, 'approvedByName', 120)
+        && isOptionalString(data, 'approvedAt', 40)
+        && isOptionalString(data, 'rejectionReason', 300)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidEnrollment(data) {
+      return data.keys().hasAll(['studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'paymentPlanCode', 'enrollmentDate', 'agreedFeeEtb', 'approvedPaidEtb', 'remainingBalanceEtb', 'status', 'registeredBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'instructorId', 'paymentPlanCode', 'paymentPlanName', 'enrollmentDate', 'agreedFeeEtb', 'approvedPaidEtb', 'remainingBalanceEtb', 'status', 'registeredBy', 'approvedBy', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isOptionalString(data, 'instructorId', 128)
+        && data.paymentPlanCode in ['FULL', 'MONTHLY', 'TWO_MONTH', 'THREE_MONTH', 'SIX_MONTH', 'CUSTOM']
+        && isOptionalString(data, 'paymentPlanName', 80)
+        && isNonEmptyString(data.enrollmentDate, 20)
+        && isPositiveNumber(data.agreedFeeEtb)
+        && isNonNegativeNumber(data.approvedPaidEtb)
+        && isNonNegativeNumber(data.remainingBalanceEtb)
+        && data.status in ['PENDING', 'ACTIVE', 'COMPLETED', 'REJECTED']
+        && isNonEmptyString(data.registeredBy, 128)
+        && isOptionalString(data, 'approvedBy', 128)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidInstallment(data) {
+      return data.keys().hasAll(['enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'installmentNumber', 'dueDate', 'amountDueEtb', 'amountPaidEtb', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'installmentNumber', 'dueDate', 'amountDueEtb', 'amountPaidEtb', 'status', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.enrollmentId, 128)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isPositiveNumber(data.installmentNumber)
+        && isNonEmptyString(data.dueDate, 20)
+        && isPositiveNumber(data.amountDueEtb)
+        && isNonNegativeNumber(data.amountPaidEtb)
+        && data.status in ['UNPAID', 'PARTIAL', 'PAID', 'OVERDUE']
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['transactionRef', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'amountEtb', 'paymentDate', 'paymentMethod', 'recordedBy', 'recordedByName', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'transactionRef', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'amountEtb', 'paymentDate', 'paymentMethod', 'recordedBy', 'recordedByName', 'status', 'approvedBy', 'approvedByName', 'approvalDate', 'rejectionReason', 'receiptId', 'receiptNumber', 'notes', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.transactionRef, 64)
+        && data.transactionRef.matches('^[A-Za-z0-9\\-_]+$')
+        && isNonEmptyString(data.enrollmentId, 128)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isPositiveNumber(data.amountEtb)
+        && isNonEmptyString(data.paymentDate, 20)
+        && data.paymentMethod in ['Cash', 'CBE Birr', 'Telebirr', 'Bank Transfer', 'Check', 'Chapa']
+        && isNonEmptyString(data.recordedBy, 128)
+        && isNonEmptyString(data.recordedByName, 120)
+        && data.status in ['PENDING', 'APPROVED', 'REJECTED']
+        && isOptionalString(data, 'approvedBy', 128)
+        && isOptionalString(data, 'approvedByName', 120)
+        && isOptionalString(data, 'approvalDate', 40)
+        && isOptionalString(data, 'rejectionReason', 300)
+        && isOptionalString(data, 'receiptId', 128)
+        && isOptionalString(data, 'receiptNumber', 40)
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPaymentRef(data) {
+      return data.keys().hasAll(['paymentId', 'transactionRef', 'recordedBy', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'paymentId', 'transactionRef', 'recordedBy', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.paymentId, 128)
+        && isNonEmptyString(data.transactionRef, 64)
+        && isNonEmptyString(data.recordedBy, 128)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidReceipt(data) {
+      return data.keys().hasAll(['receiptNumber', 'paymentId', 'transactionRef', 'studentId', 'studentCode', 'studentName', 'courseName', 'previousBalanceEtb', 'amountPaidEtb', 'remainingBalanceEtb', 'paymentDate', 'paymentMethod', 'authorizedBy', 'verificationHash', 'issuedAt'])
+        && data.keys().hasOnly(['tenantId', 'receiptNumber', 'paymentId', 'transactionRef', 'studentId', 'studentCode', 'studentName', 'studentPhone', 'courseName', 'previousBalanceEtb', 'amountPaidEtb', 'remainingBalanceEtb', 'paymentDate', 'paymentMethod', 'authorizedBy', 'verificationHash', 'issuedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.receiptNumber, 40)
+        && isNonEmptyString(data.paymentId, 128)
+        && isNonEmptyString(data.transactionRef, 64)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isOptionalString(data, 'studentPhone', 30)
+        && isNonEmptyString(data.courseName, 120)
+        && isNonNegativeNumber(data.previousBalanceEtb)
+        && isPositiveNumber(data.amountPaidEtb)
+        && isNonNegativeNumber(data.remainingBalanceEtb)
+        && isNonEmptyString(data.paymentDate, 20)
+        && isNonEmptyString(data.paymentMethod, 40)
+        && isNonEmptyString(data.authorizedBy, 120)
+        && isNonEmptyString(data.verificationHash, 80)
+        && isNonEmptyString(data.issuedAt, 40);
+    }
+
+    function isValidExpenseCategory(data) {
+      return data.keys().hasAll(['name', 'isActive'])
+        && data.keys().hasOnly(['tenantId', 'name', 'description', 'isActive'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.name, 80)
+        && isOptionalString(data, 'description', 240)
+        && data.isActive is bool;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['categoryId', 'categoryName', 'title', 'amountEtb', 'expenseDate', 'paymentMethod', 'recordedBy', 'recordedByName', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'categoryId', 'categoryName', 'title', 'amountEtb', 'expenseDate', 'paymentMethod', 'referenceNo', 'recordedBy', 'recordedByName', 'notes', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.categoryId, 128)
+        && isNonEmptyString(data.categoryName, 80)
+        && isNonEmptyString(data.title, 140)
+        && isPositiveNumber(data.amountEtb)
+        && isNonEmptyString(data.expenseDate, 20)
+        && data.paymentMethod in ['Cash', 'CBE Birr', 'Telebirr', 'Bank Transfer', 'Check', 'Chapa']
+        && isOptionalString(data, 'referenceNo', 64)
+        && isNonEmptyString(data.recordedBy, 128)
+        && isNonEmptyString(data.recordedByName, 120)
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidAttendance(data) {
+      return data.keys().hasAll(['enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'attendanceDate', 'status', 'recordedBy', 'recordedByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'attendanceDate', 'status', 'recordedBy', 'recordedByName', 'remarks', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.enrollmentId, 128)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isNonEmptyString(data.attendanceDate, 20)
+        && data.status in ['PRESENT', 'ABSENT', 'LATE', 'EXCUSED']
+        && isNonEmptyString(data.recordedBy, 128)
+        && isNonEmptyString(data.recordedByName, 120)
+        && isOptionalString(data, 'remarks', 240)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['type', 'title', 'message', 'targetRole', 'isRead', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'type', 'title', 'message', 'targetRole', 'recipientUid', 'category', 'actionSection', 'studentId', 'studentCode', 'studentName', 'courseName', 'expectedAmountEtb', 'paidAmountEtb', 'remainingBalanceEtb', 'dueDate', 'paymentStatus', 'dedupKey', 'entityType', 'entityId', 'isRead', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.type in ['DEADLINE_APPROACHING', 'OVERDUE_BALANCE', 'PENDING_REGISTRATION', 'PENDING_STAFF_REGISTRATION', 'STAFF_REGISTRATION_APPROVED', 'ID_VERIFICATION_FLAGGED', 'PENDING_PAYMENT', 'REJECTED_PAYMENT', 'UPCOMING_PAYMENT', 'PAYMENT_DUE_TODAY', 'PAYMENT_OVERDUE', 'PAYMENT_RECEIVED', 'PAYMENT_APPROVED', 'PAYMENT_REJECTED', 'OUTSTANDING_BALANCE', 'REGISTRATION_APPROVED', 'COURSE_ANNOUNCEMENT', 'ATTENDANCE_UPDATE', 'INSTRUCTOR_MESSAGE', 'ADMIN_ANNOUNCEMENT', 'SCHEDULE_CHANGE', 'NEW_INTERNAL_MESSAGE', 'CHAPA_PAYMENT_LINK', 'CHAPA_PAYMENT_VERIFIED', 'CHAPA_PAYMENT_APPROVED', 'CHAPA_PAYMENT_REJECTED', 'SUBSCRIPTION_EXPIRING', 'INSTITUTE_PROVISIONED', 'SUPPORT_SESSION_STARTED']
+        && isNonEmptyString(data.title, 140)
+        && isNonEmptyString(data.message, 420)
+        && (data.targetRole == 'ALL' || isValidRoleCode(data.targetRole))
+        && isOptionalString(data, 'recipientUid', 128)
+        && isOptionalString(data, 'category', 40)
+        && isOptionalString(data, 'actionSection', 40)
+        && isOptionalString(data, 'studentId', 128)
+        && isOptionalString(data, 'studentCode', 28)
+        && isOptionalString(data, 'studentName', 120)
+        && isOptionalString(data, 'courseName', 120)
+        && isOptionalNumber(data, 'expectedAmountEtb')
+        && isOptionalNumber(data, 'paidAmountEtb')
+        && isOptionalNumber(data, 'remainingBalanceEtb')
+        && isOptionalString(data, 'dueDate', 20)
+        && isOptionalString(data, 'paymentStatus', 30)
+        && isOptionalString(data, 'dedupKey', 128)
+        && isOptionalString(data, 'entityType', 40)
+        && isOptionalString(data, 'entityId', 128)
+        && data.isRead is bool
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidNotificationPreference(data) {
+      return data.keys().hasAll(['userId', 'inAppEnabled', 'emailEnabled', 'smsEnabled', 'whatsappEnabled', 'upcomingLeadDays', 'overdueRepeatDays', 'updatedAt'])
+        && data.keys().hasOnly(['userId', 'inAppEnabled', 'emailEnabled', 'smsEnabled', 'whatsappEnabled', 'upcomingLeadDays', 'overdueRepeatDays', 'updatedAt'])
+        && isNonEmptyString(data.userId, 128)
+        && data.inAppEnabled is bool
+        && data.emailEnabled is bool
+        && data.smsEnabled is bool
+        && data.whatsappEnabled is bool
+        && isPositiveNumber(data.upcomingLeadDays)
+        && isPositiveNumber(data.overdueRepeatDays)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidChapaTransaction(data) {
+      return data.keys().hasAll(['txRef', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'enrollmentId', 'amountEtb', 'currency', 'paymentMethod', 'source', 'paymentStatus', 'approvalStatus', 'createdBy', 'createdByName', 'createdByRole', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'txRef', 'studentId', 'studentCode', 'studentName', 'studentPhone', 'studentEmail', 'courseId', 'courseName', 'enrollmentId', 'amountEtb', 'currency', 'paymentMethod', 'source', 'checkoutUrl', 'paymentStatus', 'approvalStatus', 'chapaReference', 'chapaChannel', 'chapaFeeEtb', 'verificationProof', 'verificationSummary', 'paymentDate', 'verifiedAt', 'expiresAt', 'createdBy', 'createdByName', 'createdByRole', 'approvedBy', 'approvedByName', 'approvedAt', 'approvalNotes', 'rejectionReason', 'paymentId', 'receiptId', 'receiptNumber', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.txRef, 64)
+        && data.txRef.matches('^[A-Za-z0-9\\-_]+$')
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isOptionalString(data, 'studentPhone', 30)
+        && isOptionalString(data, 'studentEmail', 160)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isNonEmptyString(data.enrollmentId, 128)
+        && isPositiveNumber(data.amountEtb)
+        && isValidCurrency(data.currency)
+        && data.paymentMethod == 'Chapa'
+        && data.source in ['STUDENT_PORTAL', 'PAYMENT_LINK']
+        && isOptionalString(data, 'checkoutUrl', 1000)
+        && data.paymentStatus in ['INITIATED', 'PENDING_VERIFICATION', 'VERIFIED', 'FAILED', 'CANCELLED', 'REFUNDED']
+        && data.approvalStatus in ['AWAITING_APPROVAL', 'APPROVED', 'REJECTED']
+        && isOptionalString(data, 'chapaReference', 120)
+        && isOptionalString(data, 'chapaChannel', 80)
+        && isOptionalNumber(data, 'chapaFeeEtb')
+        && isOptionalString(data, 'verificationProof', 128)
+        && isOptionalString(data, 'verificationSummary', 400)
+        && isOptionalString(data, 'paymentDate', 20)
+        && isOptionalString(data, 'verifiedAt', 40)
+        && isOptionalString(data, 'expiresAt', 40)
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdByName, 120)
+        && isValidRoleCode(data.createdByRole)
+        && isOptionalString(data, 'approvedBy', 128)
+        && isOptionalString(data, 'approvedByName', 120)
+        && isOptionalString(data, 'approvedAt', 40)
+        && isOptionalString(data, 'approvalNotes', 400)
+        && isOptionalString(data, 'rejectionReason', 300)
+        && isOptionalString(data, 'paymentId', 128)
+        && isOptionalString(data, 'receiptId', 128)
+        && isOptionalString(data, 'receiptNumber', 40)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidSchemaMigration(data) {
+      return data.keys().hasAll(['version', 'name', 'appliedBy', 'appliedByName', 'status', 'appliedAt'])
+        && data.keys().hasOnly(['version', 'name', 'appliedBy', 'appliedByName', 'status', 'notes', 'appliedAt'])
+        && isNonEmptyString(data.version, 40)
+        && isNonEmptyString(data.name, 160)
+        && isNonEmptyString(data.appliedBy, 128)
+        && isNonEmptyString(data.appliedByName, 120)
+        && data.status in ['APPLIED', 'VERIFIED']
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.appliedAt, 40);
+    }
+
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['actorId', 'actorName', 'actorRole', 'action', 'entityType', 'entityId', 'summary', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'actorId', 'actorName', 'actorRole', 'actorPlatformRole', 'action', 'entityType', 'entityId', 'summary', 'result', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.actorId, 128)
+        && isNonEmptyString(data.actorName, 120)
+        && isValidRoleCode(data.actorRole)
+        && (!('actorPlatformRole' in data) || isValidPlatformRole(data.actorPlatformRole))
+        && isNonEmptyString(data.action, 80)
+        && isNonEmptyString(data.entityType, 60)
+        && isNonEmptyString(data.entityId, 128)
+        && isNonEmptyString(data.summary, 400)
+        && (!('result' in data) || data.result in ['SUCCESS', 'DENIED', 'FAILED'])
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidSmsConfig(data) {
+      return data.keys().hasAll(['ownerPhoneNumber', 'activeProvider', 'smsEnabled', 'portalNotificationsEnabled', 'internalMessagingEnabled', 'testMode', 'allowStudentToInstructor', 'allowStudentToAdmin', 'allowStudentToStudent', 'allowAttachments', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'ownerPhoneNumber', 'activeProvider', 'senderId', 'smsEnabled', 'portalNotificationsEnabled', 'internalMessagingEnabled', 'testMode', 'allowStudentToInstructor', 'allowStudentToAdmin', 'allowStudentToStudent', 'allowAttachments', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.ownerPhoneNumber, 30)
+        && data.activeProvider in ['afromessage', 'geezsms', 'twilio', 'africastalking']
+        && isOptionalString(data, 'senderId', 30)
+        && data.smsEnabled is bool
+        && data.portalNotificationsEnabled is bool
+        && data.internalMessagingEnabled is bool
+        && data.testMode is bool
+        && data.allowStudentToInstructor is bool
+        && data.allowStudentToAdmin is bool
+        && data.allowStudentToStudent is bool
+        && data.allowAttachments is bool
+        && isOptionalString(data, 'updatedBy', 128)
+        && isOptionalString(data, 'updatedByName', 120)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidCommunicationPolicy(data) {
+      return data.keys().hasAll(['portalNotificationsEnabled', 'internalMessagingEnabled', 'allowStudentToInstructor', 'allowStudentToAdmin', 'allowStudentToStudent', 'allowAttachments', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'portalNotificationsEnabled', 'internalMessagingEnabled', 'allowStudentToInstructor', 'allowStudentToAdmin', 'allowStudentToStudent', 'allowAttachments', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.portalNotificationsEnabled is bool
+        && data.internalMessagingEnabled is bool
+        && data.allowStudentToInstructor is bool
+        && data.allowStudentToAdmin is bool
+        && data.allowStudentToStudent is bool
+        && data.allowAttachments is bool
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidSmsTemplate(data) {
+      return data.keys().hasAll(['eventType', 'name', 'body', 'isActive', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'eventType', 'name', 'body', 'isActive', 'updatedBy', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.eventType in ['REGISTRATION_APPROVED', 'PAYMENT_REMINDER', 'PAYMENT_OVERDUE', 'PAYMENT_APPROVED', 'COURSE_ANNOUNCEMENT', 'ATTENDANCE_UPDATE', 'INSTRUCTOR_MESSAGE', 'ADMIN_ANNOUNCEMENT']
+        && isNonEmptyString(data.name, 100)
+        && isNonEmptyString(data.body, 640)
+        && data.isActive is bool
+        && isOptionalString(data, 'updatedBy', 128)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidSmsLog(data) {
+      return data.keys().hasAll(['eventType', 'recipientName', 'recipientPhone', 'messageBody', 'provider', 'mode', 'status', 'retryCount', 'sentBy', 'sentByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'dedupKey', 'eventType', 'recipientName', 'recipientPhone', 'studentId', 'studentCode', 'courseName', 'templateId', 'messageBody', 'provider', 'mode', 'status', 'providerMessageId', 'errorMessage', 'retryCount', 'sentBy', 'sentByName', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isOptionalString(data, 'dedupKey', 160)
+        && data.eventType in ['REGISTRATION_APPROVED', 'PAYMENT_REMINDER', 'PAYMENT_OVERDUE', 'PAYMENT_APPROVED', 'COURSE_ANNOUNCEMENT', 'ATTENDANCE_UPDATE', 'INSTRUCTOR_MESSAGE', 'ADMIN_ANNOUNCEMENT']
+        && isNonEmptyString(data.recipientName, 120)
+        && isNonEmptyString(data.recipientPhone, 30)
+        && isOptionalString(data, 'studentId', 128)
+        && isOptionalString(data, 'studentCode', 28)
+        && isOptionalString(data, 'courseName', 120)
+        && isOptionalString(data, 'templateId', 128)
+        && isNonEmptyString(data.messageBody, 640)
+        && data.provider in ['afromessage', 'geezsms', 'twilio', 'africastalking']
+        && data.mode in ['LIVE', 'TEST']
+        && data.status in ['PENDING', 'SENT', 'DELIVERED', 'FAILED', 'TEST_SIMULATED']
+        && isOptionalString(data, 'providerMessageId', 160)
+        && isOptionalString(data, 'errorMessage', 400)
+        && isNonNegativeNumber(data.retryCount)
+        && isNonEmptyString(data.sentBy, 128)
+        && isNonEmptyString(data.sentByName, 120)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidNotificationChannelRule(data) {
+      return data.keys().hasAll(['eventType', 'label', 'description', 'smsEnabled', 'portalEnabled', 'internalMessageEnabled', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'eventType', 'label', 'description', 'smsEnabled', 'portalEnabled', 'internalMessageEnabled', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.eventType in ['REGISTRATION_APPROVED', 'PAYMENT_REMINDER', 'PAYMENT_OVERDUE', 'PAYMENT_APPROVED', 'COURSE_ANNOUNCEMENT', 'ATTENDANCE_UPDATE', 'INSTRUCTOR_MESSAGE', 'ADMIN_ANNOUNCEMENT']
+        && isNonEmptyString(data.label, 100)
+        && isNonEmptyString(data.description, 240)
+        && data.smsEnabled is bool
+        && data.portalEnabled is bool
+        && data.internalMessageEnabled is bool
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidDirectoryUser(data) {
+      return data.keys().hasAll(['uid', 'fullName', 'role', 'isActive', 'lastSeenAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'uid', 'fullName', 'role', 'linkedStudentId', 'studentCode', 'courseId', 'courseName', 'isActive', 'lastSeenAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isValidId(data.uid)
+        && isNonEmptyString(data.fullName, 120)
+        && isValidRoleCode(data.role)
+        && isOptionalString(data, 'linkedStudentId', 128)
+        && isOptionalString(data, 'studentCode', 28)
+        && isOptionalString(data, 'courseId', 128)
+        && isOptionalString(data, 'courseName', 120)
+        && data.isActive is bool
+        && isNonEmptyString(data.lastSeenAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidConversation(data) {
+      return data.keys().hasAll(['type', 'title', 'participantIds', 'participantLabels', 'createdBy', 'createdByName', 'createdByRole', 'readByUids', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'type', 'title', 'description', 'participantIds', 'participantLabels', 'courseId', 'courseName', 'broadcastAudience', 'createdBy', 'createdByName', 'createdByRole', 'lastMessageText', 'lastMessageAt', 'lastMessageBy', 'lastMessageByName', 'readByUids', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.type in ['DIRECT', 'GROUP', 'BROADCAST']
+        && isNonEmptyString(data.title, 140)
+        && isOptionalString(data, 'description', 300)
+        && isBoundedStringList(data.participantIds, 200)
+        && isBoundedStringList(data.participantLabels, 200)
+        && isOptionalString(data, 'courseId', 128)
+        && isOptionalString(data, 'courseName', 120)
+        && (!('broadcastAudience' in data) || data.broadcastAudience in ['ALL_USERS', 'ALL_STUDENTS', 'ALL_INSTRUCTORS', 'ALL_ACCOUNTANTS', 'ALL_STAFF', 'COURSE', 'CUSTOM'])
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdByName, 120)
+        && isValidRoleCode(data.createdByRole)
+        && isOptionalString(data, 'lastMessageText', 300)
+        && isOptionalString(data, 'lastMessageAt', 40)
+        && isOptionalString(data, 'lastMessageBy', 128)
+        && isOptionalString(data, 'lastMessageByName', 120)
+        && isBoundedStringList(data.readByUids, 200)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidInternalMessage(data) {
+      return data.keys().hasAll(['conversationId', 'senderId', 'senderName', 'senderRole', 'body', 'readByUids', 'createdAt'])
+        && data.keys().hasOnly(['conversationId', 'senderId', 'senderName', 'senderRole', 'body', 'replyToId', 'replyToSender', 'replyToPreview', 'attachmentName', 'attachmentType', 'attachmentSize', 'attachmentDataUrl', 'readByUids', 'createdAt'])
+        && isValidId(data.conversationId)
+        && isNonEmptyString(data.senderId, 128)
+        && isNonEmptyString(data.senderName, 120)
+        && isValidRoleCode(data.senderRole)
+        && isNonEmptyString(data.body, 2000)
+        && isOptionalString(data, 'replyToId', 128)
+        && isOptionalString(data, 'replyToSender', 120)
+        && isOptionalString(data, 'replyToPreview', 200)
+        && isOptionalString(data, 'attachmentName', 160)
+        && isOptionalString(data, 'attachmentType', 100)
+        && isOptionalNumber(data, 'attachmentSize')
+        && isOptionalString(data, 'attachmentDataUrl', 650000)
+        && isBoundedStringList(data.readByUids, 200)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidFinancialAdjustment(data) {
+      return data.keys().hasAll(['adjustmentRef', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'type', 'amountEtb', 'effectiveDate', 'reason', 'approvedBy', 'approvedByName', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'adjustmentRef', 'enrollmentId', 'studentId', 'studentCode', 'studentName', 'courseId', 'courseName', 'paymentId', 'type', 'amountEtb', 'effectiveDate', 'reason', 'approvedBy', 'approvedByName', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.adjustmentRef, 64)
+        && data.adjustmentRef.matches('^[A-Za-z0-9\\-_]+$')
+        && isNonEmptyString(data.enrollmentId, 128)
+        && isNonEmptyString(data.studentId, 128)
+        && isNonEmptyString(data.studentCode, 28)
+        && isNonEmptyString(data.studentName, 120)
+        && isNonEmptyString(data.courseId, 128)
+        && isNonEmptyString(data.courseName, 120)
+        && isOptionalString(data, 'paymentId', 128)
+        && data.type in ['REFUND', 'REVERSAL', 'SCHOLARSHIP_DISCOUNT', 'FEE_ADJUSTMENT']
+        && isPositiveNumber(data.amountEtb)
+        && isNonEmptyString(data.effectiveDate, 20)
+        && isNonEmptyString(data.reason, 400)
+        && isNonEmptyString(data.approvedBy, 128)
+        && isNonEmptyString(data.approvedByName, 120)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidSecurityConfig(data) {
+      return data.keys().hasAll(['adminTimeoutMinutes', 'userTimeoutMinutes', 'warningBeforeSeconds', 'maxFailedLogins', 'lockoutMinutes', 'enforceAuditOnExports', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'adminTimeoutMinutes', 'userTimeoutMinutes', 'warningBeforeSeconds', 'maxFailedLogins', 'lockoutMinutes', 'enforceAuditOnExports', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isPositiveNumber(data.adminTimeoutMinutes) && data.adminTimeoutMinutes <= 120
+        && isPositiveNumber(data.userTimeoutMinutes) && data.userTimeoutMinutes <= 120
+        && isPositiveNumber(data.warningBeforeSeconds) && data.warningBeforeSeconds <= 300
+        && isPositiveNumber(data.maxFailedLogins) && data.maxFailedLogins <= 20
+        && isPositiveNumber(data.lockoutMinutes) && data.lockoutMinutes <= 120
+        && data.enforceAuditOnExports is bool
+        && isOptionalString(data, 'updatedBy', 128)
+        && isOptionalString(data, 'updatedByName', 120)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidLoginHistory(data) {
+      return data.keys().hasAll(['userId', 'email', 'fullName', 'role', 'eventType', 'authMethod', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'userId', 'email', 'fullName', 'role', 'eventType', 'authMethod', 'userAgent', 'sessionId', 'detail', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.userId, 128)
+        && isNonEmptyString(data.email, 160)
+        && isNonEmptyString(data.fullName, 120)
+        && isValidRoleCode(data.role)
+        && data.eventType in ['LOGIN', 'LOGOUT', 'SESSION_EXPIRED', 'FAILED_LOGIN', 'LOCKOUT']
+        && data.authMethod in ['EMAIL_PASSWORD', 'GOOGLE', 'SYSTEM']
+        && isOptionalString(data, 'userAgent', 240)
+        && isOptionalString(data, 'sessionId', 128)
+        && isOptionalString(data, 'detail', 300)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidStaffRecord(data) {
+      return data.keys().hasAll(['staffCode', 'fullName', 'address', 'phone', 'email', 'dateOfBirth', 'nationality', 'idDocumentType', 'department', 'jobPosition', 'portalRole', 'employmentStartDate', 'registrationStatus', 'registeredBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'staffCode', 'fullName', 'address', 'phone', 'email', 'dateOfBirth', 'nationality', 'gender', 'idDocumentType', 'idNumberMasked', 'idNumberHash', 'idExpiryDate', 'idVaultRefId', 'idVerificationStatus', 'department', 'jobPosition', 'portalRole', 'employmentStartDate', 'employmentStartDateEthiopian', 'photoUrl', 'linkedProfileUid', 'registrationStatus', 'registeredBy', 'registeredByName', 'approvedBy', 'approvedByName', 'approvedAt', 'rejectionReason', 'ocrConfidenceSummary', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.staffCode, 28)
+        && data.staffCode.matches('^[A-Z0-9]{2,10}-STA-[0-9]{4,}$')
+        && isNonEmptyString(data.fullName, 120)
+        && isNonEmptyString(data.address, 240)
+        && isNonEmptyString(data.phone, 30)
+        && isNonEmptyString(data.email, 160)
+        && isNonEmptyString(data.dateOfBirth, 20)
+        && isNonEmptyString(data.nationality, 80)
+        && (!('gender' in data) || data.gender in ['Male', 'Female', 'Unspecified'])
+        && data.idDocumentType in ['NATIONAL_ID', 'ETHIOPIAN_FAYDA_ID', 'PASSPORT', 'DRIVING_LICENCE']
+        && isOptionalString(data, 'idNumberMasked', 40)
+        && isOptionalString(data, 'idNumberHash', 80)
+        && isOptionalString(data, 'idExpiryDate', 20)
+        && isOptionalString(data, 'idVaultRefId', 128)
+        && (!('idVerificationStatus' in data) || data.idVerificationStatus in ['UNVERIFIED', 'PENDING_REVIEW', 'VERIFIED', 'FLAGGED', 'REJECTED'])
+        && isNonEmptyString(data.department, 80)
+        && isNonEmptyString(data.jobPosition, 80)
+        && data.portalRole in ['ADMIN', 'MANAGER', 'ACCOUNTANT', 'INSTRUCTOR', 'RECEPTIONIST', 'HR_OFFICER', 'GENERAL_STAFF']
+        && isNonEmptyString(data.employmentStartDate, 20)
+        && isOptionalString(data, 'employmentStartDateEthiopian', 40)
+        && isOptionalString(data, 'photoUrl', 90000)
+        && isOptionalString(data, 'linkedProfileUid', 128)
+        && data.registrationStatus in ['PENDING', 'APPROVED', 'REJECTED']
+        && isNonEmptyString(data.registeredBy, 128)
+        && isOptionalString(data, 'registeredByName', 120)
+        && isOptionalString(data, 'approvedBy', 128)
+        && isOptionalString(data, 'approvedByName', 120)
+        && isOptionalString(data, 'approvedAt', 40)
+        && isOptionalString(data, 'rejectionReason', 300)
+        && isOptionalString(data, 'ocrConfidenceSummary', 240)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidStaffCompensation(data) {
+      return data.keys().hasAll(['staffId', 'staffCode', 'salaryEtb', 'payFrequency', 'updatedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'staffId', 'staffCode', 'salaryEtb', 'payFrequency', 'notes', 'updatedBy', 'updatedByName', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isValidId(data.staffId)
+        && isNonEmptyString(data.staffCode, 28)
+        && isNonNegativeNumber(data.salaryEtb)
+        && data.payFrequency in ['MONTHLY', 'BIWEEKLY', 'CONTRACT']
+        && isOptionalString(data, 'notes', 300)
+        && isNonEmptyString(data.updatedBy, 128)
+        && isOptionalString(data, 'updatedByName', 120)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidIdentityDocument(data) {
+      return data.keys().hasAll(['subjectType', 'subjectId', 'subjectCode', 'subjectName', 'documentType', 'idNumberMasked', 'idNumberHash', 'encryptionAlg', 'encryptionIv', 'encryptedPayload', 'hasFrontImage', 'hasBackImage', 'ocrConfidence', 'verificationStatus', 'uploadedBy', 'uploadedByName', 'isRedacted', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'subjectType', 'subjectId', 'subjectCode', 'subjectName', 'documentType', 'idNumberMasked', 'idNumberHash', 'documentExpiryDate', 'encryptionAlg', 'encryptionIv', 'encryptedPayload', 'fileMimeType', 'hasFrontImage', 'hasBackImage', 'ocrConfidence', 'ocrWarnings', 'verificationStatus', 'verificationNotes', 'uploadedBy', 'uploadedByName', 'verifiedBy', 'verifiedByName', 'verifiedAt', 'retentionDeleteAfter', 'isRedacted', 'createdAt', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && data.subjectType in ['STUDENT', 'STAFF']
+        && isValidId(data.subjectId)
+        && isNonEmptyString(data.subjectCode, 28)
+        && isNonEmptyString(data.subjectName, 120)
+        && data.documentType in ['NATIONAL_ID', 'ETHIOPIAN_FAYDA_ID', 'PASSPORT', 'DRIVING_LICENCE']
+        && isNonEmptyString(data.idNumberMasked, 40)
+        && isNonEmptyString(data.idNumberHash, 80)
+        && isOptionalString(data, 'documentExpiryDate', 20)
+        && data.encryptionAlg == 'AES-GCM-256'
+        && isNonEmptyString(data.encryptionIv, 64)
+        && data.encryptedPayload is string && data.encryptedPayload.size() >= 1 && data.encryptedPayload.size() <= 750000
+        && isOptionalString(data, 'fileMimeType', 80)
+        && data.hasFrontImage is bool
+        && data.hasBackImage is bool
+        && data.ocrConfidence in ['HIGH', 'MEDIUM', 'LOW', 'MANUAL']
+        && (!('ocrWarnings' in data) || isBoundedStringList(data.ocrWarnings, 12))
+        && data.verificationStatus in ['PENDING_REVIEW', 'VERIFIED', 'FLAGGED', 'REJECTED']
+        && isOptionalString(data, 'verificationNotes', 400)
+        && isNonEmptyString(data.uploadedBy, 128)
+        && isNonEmptyString(data.uploadedByName, 120)
+        && isOptionalString(data, 'verifiedBy', 128)
+        && isOptionalString(data, 'verifiedByName', 120)
+        && isOptionalString(data, 'verifiedAt', 40)
+        && isOptionalString(data, 'retentionDeleteAfter', 20)
+        && data.isRedacted is bool
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidIdNumberLock(data) {
+      return data.keys().hasAll(['idNumberHash', 'documentType', 'subjectType', 'subjectId', 'subjectCode', 'subjectName', 'createdBy', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'idNumberHash', 'documentType', 'subjectType', 'subjectId', 'subjectCode', 'subjectName', 'createdBy', 'createdAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.idNumberHash, 80)
+        && data.documentType in ['NATIONAL_ID', 'ETHIOPIAN_FAYDA_ID', 'PASSPORT', 'DRIVING_LICENCE']
+        && data.subjectType in ['STUDENT', 'STAFF']
+        && isValidId(data.subjectId)
+        && isNonEmptyString(data.subjectCode, 28)
+        && isNonEmptyString(data.subjectName, 120)
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidIdCounter(data) {
+      return data.keys().hasAll(['prefix', 'currentValue', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'prefix', 'currentValue', 'updatedBy', 'updatedAt'])
+        && isOptionalString(data, 'tenantId', 80)
+        && isNonEmptyString(data.prefix, 20)
+        && data.prefix.matches('^[A-Z0-9]{2,10}-(?:STU|STA)$')
+        && data.currentValue is int && data.currentValue >= 1 && data.currentValue <= 9999999
+        && isNonEmptyString(data.updatedBy, 128)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    // ---------------------------------------------------------
+    // Validation Blueprints — ZACMA SaaS Platform Collections
+    // ---------------------------------------------------------
+    function isValidTenant(data) {
+      return data.keys().hasAll(['tenantId', 'name', 'shortName', 'slug', 'businessType', 'email', 'phone', 'country', 'city', 'address', 'primaryColor', 'secondaryColor', 'studentIdPrefix', 'staffIdPrefix', 'receiptPrefix', 'currency', 'timezone', 'academicYear', 'paymentMethods', 'defaultLanguage', 'dateFormat', 'notificationEmailEnabled', 'notificationSmsEnabled', 'notificationWhatsappEnabled', 'emailGatewayStatus', 'smsGatewayStatus', 'whatsappGatewayStatus', 'status', 'planId', 'planCode', 'planName', 'billingCycle', 'monthlyPriceEtb', 'annualPriceEtb', 'studentLimit', 'staffLimit', 'storageLimitMb', 'storageUsedMb', 'aiMonthlyQuota', 'aiRequestsUsed', 'enabledModules', 'primaryAdminName', 'primaryAdminEmail', 'primaryAdminPhone', 'primaryAdminPosition', 'subscriptionStartDate', 'subscriptionExpiresAt', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'name', 'shortName', 'slug', 'businessType', 'email', 'phone', 'country', 'city', 'address', 'website', 'logoUrl', 'primaryColor', 'secondaryColor', 'studentIdPrefix', 'staffIdPrefix', 'receiptPrefix', 'currency', 'timezone', 'academicYear', 'paymentMethods', 'defaultLanguage', 'dateFormat', 'invoiceFooterNote', 'notificationEmailEnabled', 'notificationSmsEnabled', 'notificationWhatsappEnabled', 'emailGatewayStatus', 'smsGatewayStatus', 'whatsappGatewayStatus', 'smsSenderLabel', 'status', 'planId', 'planCode', 'planName', 'billingCycle', 'monthlyPriceEtb', 'annualPriceEtb', 'studentLimit', 'staffLimit', 'storageLimitMb', 'storageUsedMb', 'aiMonthlyQuota', 'aiRequestsUsed', 'aiMonthlyTokenLimit', 'aiDocScanLimit', 'enabledModules', 'primaryAdminUid', 'primaryAdminName', 'primaryAdminEmail', 'primaryAdminPhone', 'primaryAdminPosition', 'subscriptionStartDate', 'trialEndsAt', 'subscriptionExpiresAt', 'suspendedReason', 'suspendedAt', 'isDefaultPlatformTenant', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.name, 140)
+        && isNonEmptyString(data.shortName, 40)
+        && isNonEmptyString(data.slug, 80)
+        && isNonEmptyString(data.businessType, 80)
+        && isNonEmptyString(data.email, 160)
+        && isNonEmptyString(data.phone, 30)
+        && isNonEmptyString(data.country, 80)
+        && isNonEmptyString(data.city, 80)
+        && isNonEmptyString(data.address, 240)
+        && isOptionalString(data, 'website', 200)
+        && isOptionalString(data, 'logoUrl', 90000)
+        && isNonEmptyString(data.primaryColor, 20)
+        && isNonEmptyString(data.secondaryColor, 20)
+        && isNonEmptyString(data.studentIdPrefix, 12)
+        && data.studentIdPrefix.matches('^[A-Z0-9]{2,10}$')
+        && isNonEmptyString(data.staffIdPrefix, 12)
+        && data.staffIdPrefix.matches('^[A-Z0-9]{2,10}$')
+        && isNonEmptyString(data.receiptPrefix, 16)
+        && isValidCurrency(data.currency)
+        && isNonEmptyString(data.timezone, 60)
+        && isNonEmptyString(data.academicYear, 30)
+        && isBoundedStringList(data.paymentMethods, 10)
+        && isNonEmptyString(data.defaultLanguage, 40)
+        && data.dateFormat in ['GREGORIAN_AND_ETHIOPIAN', 'GREGORIAN_ONLY', 'DD/MM/YYYY', 'YYYY-MM-DD']
+        && isOptionalString(data, 'invoiceFooterNote', 300)
+        && data.notificationEmailEnabled is bool
+        && data.notificationSmsEnabled is bool
+        && data.notificationWhatsappEnabled is bool
+        && data.emailGatewayStatus in ['CONFIGURED', 'UNCONFIGURED']
+        && data.smsGatewayStatus in ['CONFIGURED', 'UNCONFIGURED']
+        && data.whatsappGatewayStatus in ['CONFIGURED', 'UNCONFIGURED']
+        && isOptionalString(data, 'smsSenderLabel', 30)
+        && data.status in ['ACTIVE', 'TRIAL', 'SUSPENDED', 'PENDING', 'EXPIRED']
+        && isNonEmptyString(data.planId, 80)
+        && isNonEmptyString(data.planCode, 40)
+        && isNonEmptyString(data.planName, 80)
+        && data.billingCycle in ['MONTHLY', 'ANNUAL', 'TRIAL', 'CUSTOM']
+        && isNonNegativeNumber(data.monthlyPriceEtb)
+        && isNonNegativeNumber(data.annualPriceEtb)
+        && isPositiveNumber(data.studentLimit)
+        && isPositiveNumber(data.staffLimit)
+        && isPositiveNumber(data.storageLimitMb)
+        && isNonNegativeNumber(data.storageUsedMb)
+        && isNonNegativeNumber(data.aiMonthlyQuota)
+        && isNonNegativeNumber(data.aiRequestsUsed)
+        && (!('aiMonthlyTokenLimit' in data) || isNonNegativeNumber(data.aiMonthlyTokenLimit))
+        && (!('aiDocScanLimit' in data) || isNonNegativeNumber(data.aiDocScanLimit))
+        && isBoundedStringList(data.enabledModules, 20)
+        && isOptionalString(data, 'primaryAdminUid', 128)
+        && isNonEmptyString(data.primaryAdminName, 120)
+        && isNonEmptyString(data.primaryAdminEmail, 160)
+        && isNonEmptyString(data.primaryAdminPhone, 30)
+        && isNonEmptyString(data.primaryAdminPosition, 80)
+        && isNonEmptyString(data.subscriptionStartDate, 20)
+        && isOptionalString(data, 'trialEndsAt', 20)
+        && isNonEmptyString(data.subscriptionExpiresAt, 20)
+        && isOptionalString(data, 'suspendedReason', 300)
+        && isOptionalString(data, 'suspendedAt', 40)
+        && (!('isDefaultPlatformTenant' in data) || data.isDefaultPlatformTenant is bool)
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdByName, 120)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidSubscriptionPlan(data) {
+      return data.keys().hasAll(['code', 'name', 'tagline', 'monthlyPriceEtb', 'annualPriceEtb', 'trialDays', 'studentLimit', 'staffLimit', 'storageLimitMb', 'aiMonthlyQuota', 'includedModules', 'isActive', 'updatedAt'])
+        && data.keys().hasOnly(['code', 'name', 'tagline', 'monthlyPriceEtb', 'annualPriceEtb', 'trialDays', 'studentLimit', 'staffLimit', 'storageLimitMb', 'aiMonthlyQuota', 'includedModules', 'isActive', 'isFeatured', 'updatedAt'])
+        && data.code in ['FREE_TRIAL', 'BASIC', 'PROFESSIONAL', 'ENTERPRISE', 'CUSTOM']
+        && isNonEmptyString(data.name, 80)
+        && isNonEmptyString(data.tagline, 160)
+        && isNonNegativeNumber(data.monthlyPriceEtb)
+        && isNonNegativeNumber(data.annualPriceEtb)
+        && isNonNegativeNumber(data.trialDays)
+        && isPositiveNumber(data.studentLimit)
+        && isPositiveNumber(data.staffLimit)
+        && isPositiveNumber(data.storageLimitMb)
+        && isNonNegativeNumber(data.aiMonthlyQuota)
+        && isBoundedStringList(data.includedModules, 20)
+        && data.isActive is bool
+        && (!('isFeatured' in data) || data.isFeatured is bool)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPlatformSubscription(data) {
+      return data.keys().hasAll(['tenantId', 'tenantName', 'planId', 'planCode', 'planName', 'billingCycle', 'priceEtb', 'currency', 'status', 'startDate', 'expiresAt', 'autoRenew', 'updatedBy', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'tenantName', 'planId', 'planCode', 'planName', 'billingCycle', 'priceEtb', 'currency', 'status', 'startDate', 'trialEndsAt', 'expiresAt', 'autoRenew', 'lastReminderSentAt', 'notes', 'updatedBy', 'createdAt', 'updatedAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.planId, 80)
+        && isNonEmptyString(data.planCode, 40)
+        && isNonEmptyString(data.planName, 80)
+        && data.billingCycle in ['MONTHLY', 'ANNUAL', 'TRIAL', 'CUSTOM']
+        && isNonNegativeNumber(data.priceEtb)
+        && isValidCurrency(data.currency)
+        && data.status in ['ACTIVE', 'TRIAL', 'OVERDUE', 'EXPIRED', 'CANCELLED', 'SUSPENDED']
+        && isNonEmptyString(data.startDate, 20)
+        && isOptionalString(data, 'trialEndsAt', 20)
+        && isNonEmptyString(data.expiresAt, 20)
+        && data.autoRenew is bool
+        && isOptionalString(data, 'lastReminderSentAt', 40)
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.updatedBy, 128)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPlatformInvoice(data) {
+      return data.keys().hasAll(['invoiceNumber', 'tenantId', 'tenantName', 'subscriptionId', 'planName', 'billingCycle', 'amountEtb', 'currency', 'dueDate', 'status', 'issuedBy', 'issuedByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['invoiceNumber', 'tenantId', 'tenantName', 'subscriptionId', 'planName', 'billingCycle', 'amountEtb', 'currency', 'dueDate', 'status', 'paidAt', 'paymentRef', 'notes', 'issuedBy', 'issuedByName', 'createdAt', 'updatedAt'])
+        && isNonEmptyString(data.invoiceNumber, 40)
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.subscriptionId, 128)
+        && isNonEmptyString(data.planName, 80)
+        && data.billingCycle in ['MONTHLY', 'ANNUAL', 'TRIAL', 'CUSTOM']
+        && isNonNegativeNumber(data.amountEtb)
+        && isValidCurrency(data.currency)
+        && isNonEmptyString(data.dueDate, 20)
+        && data.status in ['PENDING', 'PAID', 'OVERDUE', 'VOID']
+        && isOptionalString(data, 'paidAt', 40)
+        && isOptionalString(data, 'paymentRef', 80)
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.issuedBy, 128)
+        && isNonEmptyString(data.issuedByName, 120)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidPlatformPayment(data) {
+      return data.keys().hasAll(['paymentRef', 'tenantId', 'tenantName', 'planName', 'amountEtb', 'currency', 'paymentDate', 'paymentMethod', 'status', 'recordedBy', 'recordedByName', 'createdAt'])
+        && data.keys().hasOnly(['paymentRef', 'invoiceId', 'invoiceNumber', 'tenantId', 'tenantName', 'planName', 'amountEtb', 'currency', 'paymentDate', 'paymentMethod', 'status', 'recordedBy', 'recordedByName', 'notes', 'createdAt'])
+        && isNonEmptyString(data.paymentRef, 80)
+        && isOptionalString(data, 'invoiceId', 128)
+        && isOptionalString(data, 'invoiceNumber', 40)
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.planName, 80)
+        && isPositiveNumber(data.amountEtb)
+        && isValidCurrency(data.currency)
+        && isNonEmptyString(data.paymentDate, 20)
+        && data.paymentMethod in ['Bank Transfer', 'Chapa', 'Telebirr', 'CBE Birr', 'Cash', 'Check']
+        && data.status in ['COMPLETED', 'REFUNDED']
+        && isNonEmptyString(data.recordedBy, 128)
+        && isNonEmptyString(data.recordedByName, 120)
+        && isOptionalString(data, 'notes', 400)
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidTenantInvitation(data) {
+      return data.keys().hasAll(['token', 'tenantId', 'tenantName', 'email', 'emailLower', 'fullName', 'role', 'status', 'expiresAt', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['token', 'tenantId', 'tenantName', 'email', 'emailLower', 'fullName', 'phone', 'position', 'role', 'status', 'expiresAt', 'claimedByUid', 'claimedAt', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && isNonEmptyString(data.token, 80)
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.email, 160)
+        && isNonEmptyString(data.emailLower, 160)
+        && isNonEmptyString(data.fullName, 120)
+        && isOptionalString(data, 'phone', 30)
+        && isOptionalString(data, 'position', 80)
+        && isValidRoleCode(data.role)
+        && data.status in ['PENDING', 'CLAIMED', 'REVOKED', 'EXPIRED']
+        && isNonEmptyString(data.expiresAt, 40)
+        && isOptionalString(data, 'claimedByUid', 128)
+        && isOptionalString(data, 'claimedAt', 40)
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdByName, 120)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidSupportAccessSession(data) {
+      return data.keys().hasAll(['tenantId', 'tenantName', 'actorUid', 'actorName', 'actorPlatformRole', 'reason', 'status', 'startedAt', 'expiresAt'])
+        && data.keys().hasOnly(['tenantId', 'tenantName', 'actorUid', 'actorName', 'actorPlatformRole', 'reason', 'status', 'startedAt', 'expiresAt', 'endedAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.actorUid, 128)
+        && isNonEmptyString(data.actorName, 120)
+        && isValidPlatformRole(data.actorPlatformRole)
+        && isNonEmptyString(data.reason, 300)
+        && data.status in ['ACTIVE', 'ENDED', 'EXPIRED']
+        && isNonEmptyString(data.startedAt, 40)
+        && isNonEmptyString(data.expiresAt, 40)
+        && isOptionalString(data, 'endedAt', 40);
+    }
+
+    function isValidPlatformGlobalSettings(data) {
+      return data.keys().hasAll(['platformName', 'supportEmail', 'supportPhone', 'defaultCurrency', 'defaultLanguage', 'defaultTrialDays', 'gracePeriodDays', 'autoSuspendExpiredDays', 'allowSelfSignupInstitutes', 'enforceSupportSessionReason', 'maxSupportSessionMinutes', 'updatedAt'])
+        && data.keys().hasOnly(['platformName', 'supportEmail', 'supportPhone', 'defaultCurrency', 'defaultLanguage', 'defaultTrialDays', 'gracePeriodDays', 'autoSuspendExpiredDays', 'allowSelfSignupInstitutes', 'enforceSupportSessionReason', 'maxSupportSessionMinutes', 'defaultAiModel', 'aiMonthlyTokenLimit', 'aiDocScanLimit', 'updatedBy', 'updatedByName', 'updatedAt'])
+        && isNonEmptyString(data.platformName, 120)
+        && isNonEmptyString(data.supportEmail, 160)
+        && isNonEmptyString(data.supportPhone, 30)
+        && isValidCurrency(data.defaultCurrency)
+        && isNonEmptyString(data.defaultLanguage, 40)
+        && isNonNegativeNumber(data.defaultTrialDays) && data.defaultTrialDays <= 365
+        && isNonNegativeNumber(data.gracePeriodDays) && data.gracePeriodDays <= 90
+        && isNonNegativeNumber(data.autoSuspendExpiredDays) && data.autoSuspendExpiredDays <= 90
+        && data.allowSelfSignupInstitutes is bool
+        && data.enforceSupportSessionReason is bool
+        && isPositiveNumber(data.maxSupportSessionMinutes) && data.maxSupportSessionMinutes <= 240
+        && (!('defaultAiModel' in data) || data.defaultAiModel in ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'])
+        && (!('aiMonthlyTokenLimit' in data) || isNonNegativeNumber(data.aiMonthlyTokenLimit))
+        && (!('aiDocScanLimit' in data) || isNonNegativeNumber(data.aiDocScanLimit))
+        && isOptionalString(data, 'updatedBy', 128)
+        && isOptionalString(data, 'updatedByName', 120)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidAiConversation(data) {
+      return data.keys().hasAll(['tenantId', 'ownerUid', 'ownerName', 'roleScope', 'moduleScope', 'title', 'messagesJson', 'messageCount', 'lastMessagePreview', 'modelId', 'totalTokens', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'ownerUid', 'ownerName', 'roleScope', 'moduleScope', 'title', 'messagesJson', 'messageCount', 'lastMessagePreview', 'modelId', 'totalTokens', 'createdAt', 'updatedAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.ownerUid, 128)
+        && isNonEmptyString(data.ownerName, 120)
+        && data.roleScope in ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'ACCOUNTANT', 'INSTRUCTOR', 'RECEPTIONIST', 'HR_OFFICER', 'GENERAL_STAFF', 'STUDENT']
+        && isNonEmptyString(data.moduleScope, 60)
+        && isNonEmptyString(data.title, 140)
+        && data.messagesJson is string && data.messagesJson.size() >= 2 && data.messagesJson.size() <= 90000
+        && data.messageCount is int && data.messageCount >= 0 && data.messageCount <= 200
+        && data.lastMessagePreview is string && data.lastMessagePreview.size() <= 200
+        && data.modelId in ['gemini-4-hydrogen', 'gemini-3.1-flash-lite']
+        && isNonNegativeNumber(data.totalTokens)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isValidAiUsageLog(data) {
+      return data.keys().hasAll(['tenantId', 'userId', 'userName', 'roleScope', 'moduleScope', 'featureType', 'modelId', 'promptTokens', 'outputTokens', 'totalTokens', 'estimatedCostUsd', 'status', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'userId', 'userName', 'roleScope', 'moduleScope', 'featureType', 'modelId', 'promptTokens', 'outputTokens', 'totalTokens', 'estimatedCostUsd', 'status', 'createdAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.userId, 128)
+        && isNonEmptyString(data.userName, 120)
+        && isNonEmptyString(data.roleScope, 40)
+        && isNonEmptyString(data.moduleScope, 60)
+        && data.featureType in ['CHAT', 'DOCUMENT_OCR', 'REPORT_GEN', 'DRAFT_GEN', 'SECURITY_AUDIT']
+        && isNonEmptyString(data.modelId, 60)
+        && isNonNegativeNumber(data.promptTokens)
+        && isNonNegativeNumber(data.outputTokens)
+        && isNonNegativeNumber(data.totalTokens)
+        && isNonNegativeNumber(data.estimatedCostUsd)
+        && data.status in ['SUCCESS', 'DENIED', 'ERROR']
+        && isNonEmptyString(data.createdAt, 40);
+    }
+
+    function isValidSupportTicket(data) {
+      return data.keys().hasAll(['tenantId', 'tenantName', 'subject', 'category', 'priority', 'status', 'description', 'createdBy', 'createdByName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'tenantName', 'subject', 'category', 'priority', 'status', 'description', 'createdBy', 'createdByName', 'assignedToName', 'resolutionNotes', 'createdAt', 'updatedAt'])
+        && isValidId(data.tenantId)
+        && isNonEmptyString(data.tenantName, 140)
+        && isNonEmptyString(data.subject, 160)
+        && data.category in ['BILLING', 'TECHNICAL', 'ONBOARDING', 'SECURITY', 'MODULE_UPGRADE']
+        && data.priority in ['LOW', 'MEDIUM', 'HIGH', 'URGENT']
+        && data.status in ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED']
+        && isNonEmptyString(data.description, 1200)
+        && isNonEmptyString(data.createdBy, 128)
+        && isNonEmptyString(data.createdByName, 120)
+        && isOptionalString(data, 'assignedToName', 120)
+        && isOptionalString(data, 'resolutionNotes', 800)
+        && isNonEmptyString(data.createdAt, 40)
+        && isNonEmptyString(data.updatedAt, 40);
+    }
+
+    function isConversationMember(convData) {
+      return isSameTenant(convData) && (
+        request.auth.uid in convData.participantIds
+        || (convData.type == 'BROADCAST' && (
+          convData.broadcastAudience == 'ALL_USERS'
+          || (convData.broadcastAudience == 'ALL_STUDENTS' && isStudent())
+          || (convData.broadcastAudience == 'ALL_INSTRUCTORS' && isInstructor())
+          || (convData.broadcastAudience == 'ALL_ACCOUNTANTS' && isAccountant())
+          || (convData.broadcastAudience == 'ALL_STAFF' && isStaff())
+        ))
+      );
+    }
+
+    function hasMatchingPendingInvitation(data) {
+      return ('inviteId' in data)
+        && isValidId(data.inviteId)
+        && exists(/databases/$(database)/documents/tenant_invitations/$(data.inviteId))
+        && get(/databases/$(database)/documents/tenant_invitations/$(data.inviteId)).data.status == 'PENDING'
+        && request.auth.token.email != null
+        && get(/databases/$(database)/documents/tenant_invitations/$(data.inviteId)).data.emailLower == request.auth.token.email.lower()
+        && ('tenantId' in data)
+        && data.tenantId == get(/databases/$(database)/documents/tenant_invitations/$(data.inviteId)).data.tenantId
+        && data.role == get(/databases/$(database)/documents/tenant_invitations/$(data.inviteId)).data.role
+        && !('platformRole' in data);
+    }
+
+    // ---------------------------------------------------------
+    // Connection test document
+    // ---------------------------------------------------------
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // ---------------------------------------------------------
+    // 1. Roles
+    // ---------------------------------------------------------
+    match /roles/{roleId} {
+      allow get: if isSignedIn() && isValidId(roleId) && (isStaff() || isStudent());
+      allow list: if isSignedIn() && (isStaff() || isStudent());
+      allow create, update: if isSignedIn() && isValidId(roleId) && isValidRole(incoming()) && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(roleId) && isPlatformAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 2. Profiles (Strict Tenant & Platform Role Isolation)
+    // ---------------------------------------------------------
+    match /profiles/{profileId} {
+      allow get: if isSignedIn() && isValidId(profileId) && (
+        profileId == request.auth.uid || isPlatformStaff() || (isAdmin() && isSameTenant(existing()))
+      );
+      allow list: if isSignedIn() && (
+        isPlatformStaff() || (isAdmin() && isSameTenant(existing()))
+      );
+      allow create: if isSignedIn() && isValidId(profileId) && isValidProfile(incoming()) && (
+        isPlatformAdmin() ||
+        (isAdmin() && !('platformRole' in incoming()) && isSameTenant(incoming()) && isTenantWritable(userTenantId())) ||
+        (profileId == request.auth.uid
+          && incoming().uid == request.auth.uid
+          && incoming().email == request.auth.token.email
+          && !('linkedStudentId' in incoming())
+          && !('allowedModules' in incoming())
+          && !('canExportReports' in incoming())
+          && incoming().isActive == true
+          && (
+            (isBootstrapAdmin() && incoming().role == 'ADMIN' && (!('platformRole' in incoming()) || incoming().platformRole == 'SUPER_ADMIN'))
+            || hasMatchingPendingInvitation(incoming())
+            || (!('platformRole' in incoming()) && incoming().role in ['INSTRUCTOR', 'STUDENT'] && docTenantId(incoming()) == 'zacma_default')
+          ))
+      );
+      allow update: if isSignedIn() && isValidId(profileId) && isValidProfile(incoming()) && (
+        isPlatformSuperAdmin() ||
+        (isPlatformAdmin() && (!('platformRole' in incoming()) || incoming().platformRole != 'SUPER_ADMIN') && (!('platformRole' in existing()) || existing().platformRole != 'SUPER_ADMIN')) ||
+        (isAdmin()
+          && isSameTenant(existing())
+          && docTenantId(incoming()) == docTenantId(existing())
+          && !('platformRole' in incoming())
+          && !('platformRole' in existing())
+          && isTenantWritable(userTenantId())) ||
+        (profileId == request.auth.uid
+          && incoming().uid == existing().uid
+          && incoming().role == existing().role
+          && docTenantId(incoming()) == docTenantId(existing())
+          && (!('platformRole' in incoming()) ? !('platformRole' in existing()) : (('platformRole' in existing()) && incoming().platformRole == existing().platformRole))
+          && incoming().isActive == existing().isActive
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'lastLoginAt', 'updatedAt'])) ||
+        (profileId == request.auth.uid
+          && isBootstrapAdmin()
+          && incoming().uid == existing().uid
+          && incoming().role == 'ADMIN'
+          && incoming().platformRole == 'SUPER_ADMIN'
+          && docTenantId(incoming()) == 'zacma_default')
+      );
+      allow delete: if isSignedIn() && isValidId(profileId) && profileId != request.auth.uid && (
+        isPlatformSuperAdmin() ||
+        (isAdmin() && isSameTenant(existing()) && !('platformRole' in existing()))
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 3. Courses (Tenant-isolated; Admin manages; Staff & Student read)
+    // ---------------------------------------------------------
+    match /courses/{courseId} {
+      allow get: if isSignedIn() && isValidId(courseId) && (isStaff() || isStudent()) && isSameTenant(existing());
+      allow list: if isSignedIn() && (isStaff() || isStudent()) && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(courseId) && isValidCourse(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming()) && isTenantWritable(userTenantId())));
+      allow update: if isSignedIn() && isValidId(courseId) && isValidCourse(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+      allow delete: if isSignedIn() && isValidId(courseId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+    }
+
+    // ---------------------------------------------------------
+    // 4. Payment Plans (Tenant-isolated; Finance reads; Admin manages)
+    // ---------------------------------------------------------
+    match /payment_plans/{planId} {
+      allow get: if isSignedIn() && isValidId(planId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(planId) && isValidPaymentPlan(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming()) && isTenantWritable(userTenantId())));
+      allow update: if isSignedIn() && isValidId(planId) && isValidPaymentPlan(incoming()) && docTenantId(incoming()) == docTenantId(existing()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+      allow delete: if isSignedIn() && isValidId(planId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+    }
+
+    // ---------------------------------------------------------
+    // 5. Students (Strict Tenant Isolation + Suspended Write Lock)
+    // ---------------------------------------------------------
+    match /students/{studentId} {
+      allow get: if isSignedIn() && isValidId(studentId) && isSameTenant(existing()) && (isStaff() || isOwnStudentRecord(studentId));
+      allow list: if isSignedIn() && isStaff() && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(studentId) && isValidStudent(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isReceptionist())
+          && incoming().registrationStatus == 'PENDING'
+          && incoming().registeredBy == request.auth.uid
+          && (!('idVerificationStatus' in incoming()) || incoming().idVerificationStatus in ['UNVERIFIED', 'PENDING_REVIEW']))
+      );
+      allow update: if isSignedIn() && isValidId(studentId) && isValidStudent(incoming()) && incoming().createdAt == existing().createdAt && incoming().studentCode == existing().studentCode && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isReceptionist()) && existing().registrationStatus == 'PENDING' && incoming().registrationStatus == 'PENDING' && incoming().registeredBy == existing().registeredBy && incoming().courseFeeEtb == existing().courseFeeEtb && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'phone', 'altPhone', 'email', 'dateOfBirth', 'nationality', 'address', 'photoUrl', 'updatedAt']))
+      );
+      allow delete: if isSignedIn() && isValidId(studentId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 6. Enrollments (Strict Tenant Isolation + Student Own Read)
+    // ---------------------------------------------------------
+    match /enrollments/{enrollmentId} {
+      allow get: if isSignedIn() && isValidId(enrollmentId) && isSameTenant(existing()) && (isStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(enrollmentId) && isValidEnrollment(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isReceptionist()) && incoming().status == 'PENDING' && incoming().approvedPaidEtb == 0 && incoming().registeredBy == request.auth.uid)
+      );
+      allow update: if isSignedIn() && isValidId(enrollmentId) && isValidEnrollment(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(enrollmentId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 7. Payment Installments (Strict Tenant & Finance Isolation)
+    // ---------------------------------------------------------
+    match /payment_installments/{installmentId} {
+      allow get: if isSignedIn() && isValidId(installmentId) && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(installmentId) && isValidInstallment(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager()) && incoming().amountPaidEtb == 0 && incoming().status == 'UNPAID')
+      );
+      allow update: if isSignedIn() && isValidId(installmentId) && isValidInstallment(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager()) && incoming().amountDueEtb == existing().amountDueEtb && incoming().amountPaidEtb == existing().amountPaidEtb && incoming().status == 'OVERDUE' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+      );
+      allow delete: if isSignedIn() && isValidId(installmentId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 8. Payments (Student Tuition Payments — Maker-Checker & Tenant Isolated)
+    // ---------------------------------------------------------
+    match /payments/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId) && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(paymentId) && isValidPayment(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager()) && incoming().status == 'PENDING' && incoming().recordedBy == request.auth.uid)
+      );
+      allow update: if isSignedIn() && isValidId(paymentId) && isValidPayment(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().transactionRef == existing().transactionRef
+        && incoming().recordedBy == existing().recordedBy
+        && incoming().amountEtb == existing().amountEtb
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && isTenantWritable(docTenantId(existing()))
+        && (isPlatformAdmin() || isAdmin())
+        && existing().status == 'PENDING'
+        && incoming().status in ['APPROVED', 'REJECTED']
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'approvedBy', 'approvedByName', 'approvalDate', 'rejectionReason', 'receiptId', 'receiptNumber', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 9. Payment Reference Uniqueness Lock
+    // ---------------------------------------------------------
+    match /payment_refs/{refId} {
+      allow get: if isSignedIn() && isValidId(refId) && isFinanceStaff();
+      allow list: if false;
+      allow create: if isSignedIn() && isValidId(refId) && isValidPaymentRef(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager()) && incoming().recordedBy == request.auth.uid)
+      );
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 10. Receipts (Official immutable student tuition receipts)
+    // ---------------------------------------------------------
+    match /receipts/{receiptId} {
+      allow get: if isSignedIn() && isValidId(receiptId) && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(receiptId) && isValidReceipt(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (isPlatformAdmin() || isAdmin());
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 11. Expense Categories
+    // ---------------------------------------------------------
+    match /expense_categories/{categoryId} {
+      allow get: if isSignedIn() && isValidId(categoryId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(categoryId) && isValidExpenseCategory(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming()) && isTenantWritable(userTenantId())));
+      allow update: if isSignedIn() && isValidId(categoryId) && isValidExpenseCategory(incoming()) && docTenantId(incoming()) == docTenantId(existing()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+      allow delete: if isSignedIn() && isValidId(categoryId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing()) && isTenantWritable(userTenantId())));
+    }
+
+    // ---------------------------------------------------------
+    // 12. Expenses
+    // ---------------------------------------------------------
+    match /expenses/{expenseId} {
+      allow get: if isSignedIn() && isValidId(expenseId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(expenseId) && isValidExpense(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (isPlatformAdmin() || isAdmin());
+      allow update: if isSignedIn() && isValidId(expenseId) && isValidExpense(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(expenseId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 13. Attendance
+    // ---------------------------------------------------------
+    match /attendance/{attendanceId} {
+      allow get: if isSignedIn() && isValidId(attendanceId) && isSameTenant(existing()) && (isStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(attendanceId) && isValidAttendance(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        (isInstructor() && incoming().recordedBy == request.auth.uid)
+      );
+      allow update: if isSignedIn() && isValidId(attendanceId) && isValidAttendance(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        (isInstructor() && incoming().recordedBy == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'remarks', 'recordedBy', 'recordedByName', 'updatedAt']))
+      );
+      allow delete: if isSignedIn() && isValidId(attendanceId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 14. Notifications (Tenant-scoped)
+    // ---------------------------------------------------------
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && isValidId(notificationId) && isSameTenant(existing()) && (
+        isStaff() ||
+        (isStudent() && (
+          (('studentId' in existing()) && isOwnStudentRecord(existing().studentId)) ||
+          (('recipientUid' in existing()) && existing().recipientUid == request.auth.uid) ||
+          existing().targetRole == 'ALL'
+        ))
+      );
+      allow list: if isSignedIn() && isSameTenant(existing()) && (
+        isStaff() ||
+        (isStudent() && (
+          (('studentId' in existing()) && isOwnStudentRecord(existing().studentId)) ||
+          (('recipientUid' in existing()) && existing().recipientUid == request.auth.uid) ||
+          existing().targetRole == 'ALL'
+        ))
+      );
+      allow create: if isSignedIn() && isValidId(notificationId) && isValidNotification(incoming()) && (
+        isPlatformStaff() ||
+        (isStaff() && isSameTenant(incoming())) ||
+        (isStudent() && isSameTenant(incoming()) && incoming().type == 'NEW_INTERNAL_MESSAGE' && ('recipientUid' in incoming())) ||
+        (isStudent() && isSameTenant(incoming()) && incoming().type == 'CHAPA_PAYMENT_VERIFIED' && ('studentId' in incoming()) && isOwnStudentRecord(incoming().studentId) && incoming().targetRole in ['ADMIN', 'STUDENT'])
+      );
+      allow update: if isSignedIn() && isValidId(notificationId) && isValidNotification(incoming()) && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isStaff() || (isStudent() && (
+          (('studentId' in existing()) && isOwnStudentRecord(existing().studentId)) ||
+          (('recipientUid' in existing()) && existing().recipientUid == request.auth.uid) ||
+          existing().targetRole == 'ALL'
+        ))) && incoming().diff(existing()).affectedKeys().hasOnly(['isRead']))
+      );
+      allow delete: if isSignedIn() && isValidId(notificationId) && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+    }
+
+    // ---------------------------------------------------------
+    // 15. Notification Preferences (Self or Admin)
+    // ---------------------------------------------------------
+    match /notification_preferences/{prefId} {
+      allow get: if isSignedIn() && isValidId(prefId) && (prefId == request.auth.uid || isPlatformAdmin() || isAdmin());
+      allow list: if isSignedIn() && (isPlatformAdmin() || isAdmin());
+      allow create, update: if isSignedIn() && isValidId(prefId) && isValidNotificationPreference(incoming()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        (prefId == request.auth.uid && incoming().userId == request.auth.uid)
+      );
+      allow delete: if isSignedIn() && isValidId(prefId) && (isPlatformAdmin() || isAdmin());
+    }
+
+    // ---------------------------------------------------------
+    // 16. Schema Migrations (Append-only Admin ledger)
+    // ---------------------------------------------------------
+    match /schema_migrations/{migId} {
+      allow get: if isSignedIn() && isValidId(migId) && (isPlatformStaff() || isAdmin());
+      allow list: if isSignedIn() && (isPlatformStaff() || isAdmin());
+      allow create: if isSignedIn() && isValidId(migId) && isValidSchemaMigration(incoming()) && (isPlatformAdmin() || isAdmin());
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 17. Audit Logs (Strictly append-only immutable trail; Platform reads all, Institute Admin reads own tenant)
+    // ---------------------------------------------------------
+    match /audit_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (isPlatformStaff() || (isAdmin() && isSameTenant(existing())));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && isSameTenant(existing())));
+      allow create: if isSignedIn() && isValidId(logId) && isValidAuditLog(incoming()) && (isStaff() || isStudent()) && incoming().actorId == request.auth.uid && (isPlatformStaff() || isSameTenant(incoming()));
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 18. SMS Configuration
+    // ---------------------------------------------------------
+    match /sms_config/{configId} {
+      allow get: if isSignedIn() && isValidId(configId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create, update: if isSignedIn() && isValidId(configId) && isValidSmsConfig(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming())));
+      allow delete: if isSignedIn() && isValidId(configId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing())));
+    }
+
+    // ---------------------------------------------------------
+    // 19. Communication Policy
+    // ---------------------------------------------------------
+    match /communication_policy/{policyId} {
+      allow get: if isSignedIn() && isValidId(policyId) && (isStaff() || isStudent());
+      allow list: if isSignedIn() && (isPlatformAdmin() || isAdmin());
+      allow create, update: if isSignedIn() && isValidId(policyId) && isValidCommunicationPolicy(incoming()) && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(policyId) && (isPlatformAdmin() || isAdmin());
+    }
+
+    // ---------------------------------------------------------
+    // 20. SMS Message Templates
+    // ---------------------------------------------------------
+    match /sms_templates/{templateId} {
+      allow get: if isSignedIn() && isValidId(templateId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create, update: if isSignedIn() && isValidId(templateId) && isValidSmsTemplate(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming())));
+      allow delete: if isSignedIn() && isValidId(templateId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing())));
+    }
+
+    // ---------------------------------------------------------
+    // 21. SMS Delivery Logs
+    // ---------------------------------------------------------
+    match /sms_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && isFinanceStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isFinanceStaff() && isSameTenant(existing());
+      allow create: if isSignedIn() && isValidId(logId) && isValidSmsLog(incoming()) && isFinanceStaff() && isSameTenant(incoming()) && incoming().sentBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(logId) && isValidSmsLog(incoming()) && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing())));
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 22. Unified Notification Channel Rules Matrix
+    // ---------------------------------------------------------
+    match /notification_channel_rules/{ruleId} {
+      allow get: if isSignedIn() && isValidId(ruleId) && isStaff() && isSameTenant(existing());
+      allow list: if isSignedIn() && isStaff() && isSameTenant(existing());
+      allow create, update: if isSignedIn() && isValidId(ruleId) && isValidNotificationChannelRule(incoming()) && (isPlatformAdmin() || (isAdmin() && isSameTenant(incoming())));
+      allow delete: if isSignedIn() && isValidId(ruleId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing())));
+    }
+
+    // ---------------------------------------------------------
+    // 23. Directory Users (Tenant-scoped PII-free messaging directory)
+    // ---------------------------------------------------------
+    match /directory_users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isStaff() || isStudent()) && isSameTenant(existing());
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin() || ((isStaff() || isStudent()) && existing().isActive == true));
+      allow create, update: if isSignedIn() && isValidId(userId) && isValidDirectoryUser(incoming()) && (
+        isPlatformAdmin() ||
+        (isAdmin() && isSameTenant(incoming())) ||
+        (userId == request.auth.uid
+          && incoming().uid == request.auth.uid
+          && profileExists()
+          && incoming().role == myProfile().role
+          && docTenantId(incoming()) == userTenantId()
+          && incoming().isActive == myProfile().isActive)
+      );
+      allow delete: if isSignedIn() && isValidId(userId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(existing())));
+    }
+
+    // ---------------------------------------------------------
+    // 24. Internal Conversations (Strict Tenant & Participant Isolation)
+    // ---------------------------------------------------------
+    match /conversations/{conversationId} {
+      allow get: if isSignedIn() && isValidId(conversationId) && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin() || isConversationMember(existing()));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin() || isConversationMember(existing()));
+      allow create: if isSignedIn() && isValidId(conversationId) && isValidConversation(incoming()) && incoming().createdBy == request.auth.uid && isSameTenant(incoming()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        (incoming().type == 'DIRECT' && request.auth.uid in incoming().participantIds && incoming().participantIds.size() == 2) ||
+        (incoming().type == 'GROUP' && isStaff() && request.auth.uid in incoming().participantIds)
+      );
+      allow update: if isSignedIn() && isValidId(conversationId) && isValidConversation(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().createdBy == existing().createdBy
+        && incoming().type == existing().type
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && (
+          isPlatformAdmin() ||
+          isAdmin() ||
+          (isConversationMember(existing()) && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastMessageAt', 'lastMessageBy', 'lastMessageByName', 'readByUids', 'updatedAt']))
+        );
+      allow delete: if isSignedIn() && isValidId(conversationId) && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) && (
+          isPlatformAdmin() ||
+          (isAdmin() && isSameTenant(get(/databases/$(database)/documents/conversations/$(conversationId)).data)) ||
+          isConversationMember(get(/databases/$(database)/documents/conversations/$(conversationId)).data)
+        );
+        allow list: if isSignedIn() && isValidId(conversationId) && (
+          isPlatformAdmin() ||
+          (isAdmin() && isSameTenant(get(/databases/$(database)/documents/conversations/$(conversationId)).data)) ||
+          isConversationMember(get(/databases/$(database)/documents/conversations/$(conversationId)).data)
+        );
+        allow create: if isSignedIn() && isValidId(conversationId) && isValidId(messageId)
+          && isValidInternalMessage(incoming())
+          && incoming().conversationId == conversationId
+          && incoming().senderId == request.auth.uid
+          && exists(/databases/$(database)/documents/conversations/$(conversationId))
+          && (
+            isPlatformAdmin() ||
+            (isAdmin() && isSameTenant(get(/databases/$(database)/documents/conversations/$(conversationId)).data)) ||
+            (isConversationMember(get(/databases/$(database)/documents/conversations/$(conversationId)).data)
+              && get(/databases/$(database)/documents/conversations/$(conversationId)).data.type != 'BROADCAST')
+          );
+        allow update: if isSignedIn() && isValidId(conversationId) && isValidId(messageId)
+          && isValidInternalMessage(incoming())
+          && incoming().conversationId == existing().conversationId
+          && incoming().senderId == existing().senderId
+          && incoming().createdAt == existing().createdAt
+          && (
+            isPlatformAdmin() ||
+            (isAdmin() && isSameTenant(get(/databases/$(database)/documents/conversations/$(conversationId)).data)) ||
+            (isConversationMember(get(/databases/$(database)/documents/conversations/$(conversationId)).data)
+              && incoming().diff(existing()).affectedKeys().hasOnly(['readByUids']))
+          );
+        allow delete: if isSignedIn() && isValidId(conversationId) && isValidId(messageId) && (isPlatformAdmin() || (isAdmin() && isSameTenant(get(/databases/$(database)/documents/conversations/$(conversationId)).data)));
+      }
+    }
+
+    // ---------------------------------------------------------
+    // 25. Financial Adjustments & Refunds (Tenant-isolated)
+    // ---------------------------------------------------------
+    match /financial_adjustments/{adjustmentId} {
+      allow get: if isSignedIn() && isValidId(adjustmentId) && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(adjustmentId) && isValidFinancialAdjustment(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (isPlatformAdmin() || isAdmin()) && incoming().approvedBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 26. Security & Session Timeout Policy
+    // ---------------------------------------------------------
+    match /security_config/{configId} {
+      allow get: if isSignedIn() && isValidId(configId) && (isStaff() || isStudent());
+      allow list: if isSignedIn() && (isPlatformAdmin() || isAdmin());
+      allow create, update: if isSignedIn() && isValidId(configId) && isValidSecurityConfig(incoming()) && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(configId) && (isPlatformAdmin() || isAdmin());
+    }
+
+    // ---------------------------------------------------------
+    // 27. Login & Session History
+    // ---------------------------------------------------------
+    match /login_history/{entryId} {
+      allow get: if isSignedIn() && isValidId(entryId) && (isPlatformStaff() || (isAdmin() && isSameTenant(existing())) || existing().userId == request.auth.uid);
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && isSameTenant(existing())) || existing().userId == request.auth.uid);
+      allow create: if isSignedIn() && isValidId(entryId) && isValidLoginHistory(incoming()) && (isStaff() || isStudent()) && incoming().userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 28. Chapa Online Payment Transactions (Tenant-isolated)
+    // ---------------------------------------------------------
+    match /chapa_transactions/{txId} {
+      allow get: if isSignedIn() && isValidId(txId) && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isFinanceStaff() || isOwnStudentRecord(existing().studentId));
+      allow create: if isSignedIn() && isValidId(txId) && isValidChapaTransaction(incoming())
+        && isSameTenant(incoming())
+        && isTenantWritable(docTenantId(incoming()))
+        && incoming().approvalStatus == 'AWAITING_APPROVAL'
+        && incoming().paymentStatus == 'INITIATED'
+        && incoming().createdBy == request.auth.uid
+        && (
+          isPlatformAdmin() ||
+          isAdmin() ||
+          isAccountant() ||
+          isManager() ||
+          (isStudent() && incoming().source == 'STUDENT_PORTAL' && isOwnStudentRecord(incoming().studentId))
+        );
+      allow update: if isSignedIn() && isValidId(txId) && isValidChapaTransaction(incoming())
+        && incoming().txRef == existing().txRef
+        && incoming().studentId == existing().studentId
+        && incoming().enrollmentId == existing().enrollmentId
+        && incoming().amountEtb == existing().amountEtb
+        && incoming().currency == existing().currency
+        && incoming().paymentMethod == existing().paymentMethod
+        && incoming().source == existing().source
+        && incoming().createdBy == existing().createdBy
+        && incoming().createdAt == existing().createdAt
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && isTenantWritable(docTenantId(existing()))
+        && (
+          isPlatformAdmin() ||
+          isAdmin() ||
+          (
+            (isAccountant() || isManager() || isOwnStudentRecord(existing().studentId))
+            && existing().approvalStatus == 'AWAITING_APPROVAL'
+            && existing().paymentStatus in ['INITIATED', 'PENDING_VERIFICATION']
+            && incoming().approvalStatus == 'AWAITING_APPROVAL'
+            && incoming().paymentStatus in ['PENDING_VERIFICATION', 'VERIFIED', 'FAILED', 'CANCELLED']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'paymentStatus',
+              'chapaReference',
+              'chapaChannel',
+              'chapaFeeEtb',
+              'verificationProof',
+              'verificationSummary',
+              'paymentDate',
+              'verifiedAt',
+              'updatedAt'
+            ])
+          )
+        );
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 29. Staff Registrations & HR Records (Tenant-isolated)
+    // ---------------------------------------------------------
+    match /staff_records/{staffId} {
+      allow get: if isSignedIn() && isValidId(staffId) && isSameTenant(existing()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        isHrOfficer() ||
+        ((isAccountant() || isManager()) && existing().registeredBy == request.auth.uid)
+      );
+      allow list: if isSignedIn() && isSameTenant(existing()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        isHrOfficer() ||
+        ((isAccountant() || isManager()) && existing().registeredBy == request.auth.uid)
+      );
+      allow create: if isSignedIn() && isValidId(staffId) && isValidStaffRecord(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isHrOfficer())
+          && incoming().registrationStatus == 'PENDING'
+          && incoming().registeredBy == request.auth.uid
+          && incoming().portalRole != 'ADMIN'
+          && (!('idVerificationStatus' in incoming()) || incoming().idVerificationStatus in ['UNVERIFIED', 'PENDING_REVIEW']))
+      );
+      allow update: if isSignedIn() && isValidId(staffId) && isValidStaffRecord(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().staffCode == existing().staffCode
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && isTenantWritable(docTenantId(existing()))
+        && (
+          isPlatformAdmin() ||
+          isAdmin() ||
+          ((isAccountant() || isManager() || isHrOfficer())
+            && existing().registeredBy == request.auth.uid
+            && existing().registrationStatus == 'PENDING'
+            && incoming().registrationStatus == 'PENDING'
+            && incoming().portalRole == existing().portalRole
+            && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'address', 'phone', 'email', 'dateOfBirth', 'nationality', 'gender', 'photoUrl', 'updatedAt']))
+        );
+      allow delete: if isSignedIn() && isValidId(staffId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 30. Staff Compensation / Salary (Tenant-isolated Admin-only)
+    // ---------------------------------------------------------
+    match /staff_compensation/{staffId} {
+      allow get: if isSignedIn() && isValidId(staffId) && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+      allow create: if isSignedIn() && isValidId(staffId) && isValidStaffCompensation(incoming()) && incoming().staffId == staffId && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (isPlatformAdmin() || isAdmin()) && incoming().updatedBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(staffId) && isValidStaffCompensation(incoming()) && incoming().staffId == existing().staffId && incoming().createdAt == existing().createdAt && docTenantId(incoming()) == docTenantId(existing()) && isSameTenant(existing()) && isTenantWritable(docTenantId(existing())) && (isPlatformAdmin() || isAdmin()) && incoming().updatedBy == request.auth.uid;
+      allow delete: if isSignedIn() && isValidId(staffId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 31. Restricted Encrypted Identity Documents Vault (Tenant-isolated)
+    // ---------------------------------------------------------
+    match /identity_documents/{docId} {
+      allow get: if isSignedIn() && isValidId(docId) && isSameTenant(existing()) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isHrOfficer()) && existing().uploadedBy == request.auth.uid && existing().verificationStatus == 'PENDING_REVIEW')
+      );
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+      allow create: if isSignedIn() && isValidId(docId) && isValidIdentityDocument(incoming()) && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && (
+        isPlatformAdmin() ||
+        isAdmin() ||
+        ((isAccountant() || isManager() || isHrOfficer() || isReceptionist())
+          && incoming().uploadedBy == request.auth.uid
+          && incoming().verificationStatus == 'PENDING_REVIEW'
+          && incoming().isRedacted == false)
+      );
+      allow update: if isSignedIn() && isValidId(docId) && isValidIdentityDocument(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().subjectId == existing().subjectId
+        && incoming().subjectType == existing().subjectType
+        && incoming().uploadedBy == existing().uploadedBy
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && isTenantWritable(docTenantId(existing()))
+        && (isPlatformAdmin() || isAdmin());
+      allow delete: if isSignedIn() && isValidId(docId) && isSameTenant(existing()) && (isPlatformAdmin() || (isAdmin() && isTenantWritable(docTenantId(existing()))));
+    }
+
+    // ---------------------------------------------------------
+    // 32. Hashed Duplicate Identification Number Locks (Tenant-isolated)
+    // ---------------------------------------------------------
+    match /id_number_locks/{hashId} {
+      allow get: if isSignedIn() && isValidId(hashId) && isRegistrationStaff();
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+      allow create: if isSignedIn() && isValidId(hashId) && isValidIdNumberLock(incoming()) && isRegistrationStaff() && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && incoming().createdBy == request.auth.uid;
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(hashId) && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+    }
+
+    // ---------------------------------------------------------
+    // 33. Atomic Sequential Registration ID Counters (Tenant-scoped)
+    // ---------------------------------------------------------
+    match /id_counters/{counterId} {
+      allow get: if isSignedIn() && isValidId(counterId) && isRegistrationStaff();
+      allow list: if isSignedIn() && isSameTenant(existing()) && (isPlatformAdmin() || isAdmin());
+      allow create: if isSignedIn() && isValidId(counterId) && isValidIdCounter(incoming()) && isRegistrationStaff() && isSameTenant(incoming()) && isTenantWritable(docTenantId(incoming())) && incoming().updatedBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(counterId) && isValidIdCounter(incoming())
+        && incoming().prefix == existing().prefix
+        && docTenantId(incoming()) == docTenantId(existing())
+        && isSameTenant(existing())
+        && isTenantWritable(docTenantId(existing()))
+        && incoming().updatedBy == request.auth.uid
+        && (
+          isPlatformAdmin() ||
+          isAdmin() ||
+          ((isAccountant() || isManager() || isReceptionist() || isHrOfficer()) && incoming().currentValue == existing().currentValue + 1)
+        );
+      allow delete: if false;
+    }
+
+    // =========================================================
+    // ZACMA MULTI-TENANT SAAS PLATFORM OWNER COLLECTIONS (34-42)
+    // =========================================================
+
+    // ---------------------------------------------------------
+    // 34. Tenants (Training Institutes — Platform manages; Institute Admin updates own branding only)
+    // ---------------------------------------------------------
+    match /tenants/{tenantId} {
+      allow get: if isSignedIn() && isValidId(tenantId) && (isPlatformStaff() || tenantId == userTenantId());
+      allow list: if isSignedIn() && (isPlatformStaff() || existing().tenantId == userTenantId());
+      allow create: if isSignedIn() && isValidId(tenantId) && isValidTenant(incoming()) && incoming().tenantId == tenantId && isPlatformAdmin();
+      allow update: if isSignedIn() && isValidId(tenantId) && isValidTenant(incoming())
+        && incoming().tenantId == existing().tenantId
+        && incoming().createdAt == existing().createdAt
+        && (
+          isPlatformAdmin() ||
+          (isAdmin()
+            && tenantId == userTenantId()
+            && existing().status != 'SUSPENDED'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'shortName',
+              'email',
+              'phone',
+              'country',
+              'city',
+              'address',
+              'website',
+              'logoUrl',
+              'primaryColor',
+              'secondaryColor',
+              'studentIdPrefix',
+              'staffIdPrefix',
+              'receiptPrefix',
+              'currency',
+              'timezone',
+              'academicYear',
+              'paymentMethods',
+              'defaultLanguage',
+              'dateFormat',
+              'invoiceFooterNote',
+              'notificationEmailEnabled',
+              'notificationSmsEnabled',
+              'notificationWhatsappEnabled',
+              'emailGatewayStatus',
+              'smsGatewayStatus',
+              'whatsappGatewayStatus',
+              'smsSenderLabel',
+              'updatedAt'
+            ]))
+        );
+      allow delete: if isSignedIn() && isValidId(tenantId) && isPlatformSuperAdmin() && tenantId != 'zacma_default';
+    }
+
+    // ---------------------------------------------------------
+    // 35. Subscription Plans (Platform Admin manages; Institute Admins read active plans)
+    // ---------------------------------------------------------
+    match /subscription_plans/{planId} {
+      allow get: if isSignedIn() && isValidId(planId) && (isPlatformStaff() || isAdmin());
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().isActive == true));
+      allow create, update: if isSignedIn() && isValidId(planId) && isValidSubscriptionPlan(incoming()) && isPlatformAdmin();
+      allow delete: if isSignedIn() && isValidId(planId) && isPlatformSuperAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 36. Platform Subscriptions (Platform Finance/Admin manages; Institute Admin reads own only)
+    // ---------------------------------------------------------
+    match /platform_subscriptions/{subId} {
+      allow get: if isSignedIn() && isValidId(subId) && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow create: if isSignedIn() && isValidId(subId) && isValidPlatformSubscription(incoming()) && isPlatformFinance();
+      allow update: if isSignedIn() && isValidId(subId) && isValidPlatformSubscription(incoming()) && incoming().tenantId == existing().tenantId && incoming().createdAt == existing().createdAt && isPlatformFinance();
+      allow delete: if isSignedIn() && isValidId(subId) && isPlatformSuperAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 37. Platform Invoices (Strictly separate from Student Tuition Receipts)
+    // ---------------------------------------------------------
+    match /platform_invoices/{invoiceId} {
+      allow get: if isSignedIn() && isValidId(invoiceId) && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow create: if isSignedIn() && isValidId(invoiceId) && isValidPlatformInvoice(incoming()) && isPlatformFinance();
+      allow update: if isSignedIn() && isValidId(invoiceId) && isValidPlatformInvoice(incoming()) && incoming().tenantId == existing().tenantId && incoming().invoiceNumber == existing().invoiceNumber && incoming().createdAt == existing().createdAt && isPlatformFinance();
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 38. Platform Payments (ZACMA SaaS Subscription Revenue — Strictly Platform Finance Only)
+    // ---------------------------------------------------------
+    match /platform_payments/{paymentId} {
+      allow get: if isSignedIn() && isValidId(paymentId) && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow create: if isSignedIn() && isValidId(paymentId) && isValidPlatformPayment(incoming()) && isPlatformFinance() && incoming().recordedBy == request.auth.uid;
+      allow update: if isSignedIn() && isValidId(paymentId) && isValidPlatformPayment(incoming()) && incoming().tenantId == existing().tenantId && incoming().createdAt == existing().createdAt && isPlatformSuperAdmin();
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 39. Tenant Invitations (Secure Email-Bound Institute Admin Onboarding)
+    // ---------------------------------------------------------
+    match /tenant_invitations/{inviteId} {
+      allow get: if isSignedIn() && isValidId(inviteId) && (
+        isPlatformStaff() ||
+        (isAdmin() && existing().tenantId == userTenantId()) ||
+        (request.auth.token.email != null && existing().emailLower == request.auth.token.email.lower())
+      );
+      allow list: if isSignedIn() && (
+        isPlatformStaff() ||
+        (isAdmin() && existing().tenantId == userTenantId()) ||
+        (request.auth.token.email != null && existing().emailLower == request.auth.token.email.lower())
+      );
+      allow create: if isSignedIn() && isValidId(inviteId) && isValidTenantInvitation(incoming()) && (
+        isPlatformAdmin() ||
+        (isAdmin() && incoming().tenantId == userTenantId() && isTenantWritable(userTenantId()))
+      );
+      allow update: if isSignedIn() && isValidId(inviteId) && isValidTenantInvitation(incoming())
+        && incoming().tenantId == existing().tenantId
+        && incoming().emailLower == existing().emailLower
+        && incoming().createdAt == existing().createdAt
+        && (
+          isPlatformAdmin() ||
+          (isAdmin() && existing().tenantId == userTenantId()) ||
+          (existing().status == 'PENDING'
+            && incoming().status == 'CLAIMED'
+            && request.auth.token.email != null
+            && existing().emailLower == request.auth.token.email.lower()
+            && incoming().claimedByUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'claimedByUid', 'claimedAt', 'updatedAt']))
+        );
+      allow delete: if isSignedIn() && isValidId(inviteId) && isPlatformAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 40. Support Access Sessions (Authorized, Time-Limited, Auditable — No Silent Impersonation)
+    // ---------------------------------------------------------
+    match /support_access_sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId) && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow create: if isSignedIn() && isValidId(sessionId) && isValidSupportAccessSession(incoming()) && isPlatformSupport() && incoming().actorUid == request.auth.uid && incoming().status == 'ACTIVE';
+      allow update: if isSignedIn() && isValidId(sessionId) && isValidSupportAccessSession(incoming())
+        && incoming().tenantId == existing().tenantId
+        && incoming().actorUid == existing().actorUid
+        && incoming().startedAt == existing().startedAt
+        && isPlatformSupport()
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'endedAt']);
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 41. Platform Global Settings (ZACMA Platform Admin manages)
+    // ---------------------------------------------------------
+    match /platform_settings/{settingId} {
+      allow get: if isSignedIn() && isValidId(settingId) && (isPlatformStaff() || isAdmin());
+      allow list: if isSignedIn() && isPlatformStaff();
+      allow create, update: if isSignedIn() && isValidId(settingId) && isValidPlatformGlobalSettings(incoming()) && isPlatformAdmin();
+      allow delete: if false;
+    }
+
+    // ---------------------------------------------------------
+    // 42. Support Tickets (Institutes create & view own; Platform Support resolves all)
+    // ---------------------------------------------------------
+    match /support_tickets/{ticketId} {
+      allow get: if isSignedIn() && isValidId(ticketId) && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow list: if isSignedIn() && (isPlatformStaff() || (isAdmin() && existing().tenantId == userTenantId()));
+      allow create: if isSignedIn() && isValidId(ticketId) && isValidSupportTicket(incoming()) && incoming().createdBy == request.auth.uid && (isPlatformStaff() || (isAdmin() && incoming().tenantId == userTenantId()));
+      allow update: if isSignedIn() && isValidId(ticketId) && isValidSupportTicket(incoming()) && incoming().tenantId == existing().tenantId && incoming().createdAt == existing().createdAt && (isPlatformSupport() || (isAdmin() && existing().tenantId == userTenantId() && incoming().diff(existing()).affectedKeys().hasOnly(['description', 'priority', 'updatedAt'])));
+      allow delete: if isSignedIn() && isValidId(ticketId) && isPlatformSuperAdmin();
+    }
+
+    // ---------------------------------------------------------
+    // 43. Private AI Conversations (STRICTLY Owner-Only + Tenant-Isolated — Zero Cross-User Visibility)
+    // ---------------------------------------------------------
+    match /ai_conversations/{convId} {
+      allow get: if isSignedIn() && isValidId(convId)
+        && existing().ownerUid == request.auth.uid
+        && (isPlatformStaff() || existing().tenantId == userTenantId());
+      allow list: if isSignedIn()
+        && existing().ownerUid == request.auth.uid
+        && (isPlatformStaff() || existing().tenantId == userTenantId());
+      allow create: if isSignedIn() && isValidId(convId)
+        && isValidAiConversation(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && (isPlatformStaff() || incoming().tenantId == userTenantId());
+      allow update: if isSignedIn() && isValidId(convId)
+        && isValidAiConversation(incoming())
+        && existing().ownerUid == request.auth.uid
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().tenantId == existing().tenantId
+        && incoming().createdAt == existing().createdAt
+        && (isPlatformStaff() || existing().tenantId == userTenantId());
+      allow delete: if isSignedIn() && isValidId(convId)
+        && existing().ownerUid == request.auth.uid
+        && (isPlatformStaff() || existing().tenantId == userTenantId());
+    }
+
+    // ---------------------------------------------------------
+    // 44. AI Usage & Cost Telemetry Logs (Immutable; Owner reads self, Admin reads tenant, Super Admin reads all)
+    // ---------------------------------------------------------
+    match /ai_usage_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (
+        isPlatformStaff() ||
+        (isAdmin() && existing().tenantId == userTenantId()) ||
+        (existing().userId == request.auth.uid && existing().tenantId == userTenantId())
+      );
+      allow list: if isSignedIn() && (
+        isPlatformStaff() ||
+        (isAdmin() && existing().tenantId == userTenantId()) ||
+        (existing().userId == request.auth.uid && existing().tenantId == userTenantId())
+      );
+      allow create: if isSignedIn() && isValidId(logId)
+        && isValidAiUsageLog(incoming())
+        && incoming().userId == request.auth.uid
+        && (isPlatformStaff() || incoming().tenantId == userTenantId());
+      allow update, delete: if false;
+    }
+  }
+}

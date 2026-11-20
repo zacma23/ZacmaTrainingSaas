@@ -1,0 +1,10 @@
+{
+  "name": "Remix ZACMA Portal",
+  "description": "Student Fee Management \u0026 Accounting Portal for ZACMA Technology \u0026 Training Institute.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
